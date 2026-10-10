@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { Layout, Menu, Dropdown, Spin, Space, Select, Typography } from 'antd'
-import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined, BookOutlined, AimOutlined, BankOutlined, ContactsOutlined, ImportOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
+import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined, BookOutlined, AimOutlined, BankOutlined, ContactsOutlined, ImportOutlined, SafetyCertificateOutlined, MailOutlined, SendOutlined, CheckSquareOutlined, FileProtectOutlined, InboxOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from './auth'
 import i18n, { LOCALE_KEY } from './i18n'
@@ -16,6 +16,11 @@ import CompaniesPage from './pages/Companies'
 import ContactsPage from './pages/Contacts'
 import ImportsPage from './pages/Imports'
 import CompliancePage from './pages/Compliance'
+import DsrPage from './pages/Dsr'
+import MailboxesPage from './pages/Mailboxes'
+import SequencesPage from './pages/Sequences'
+import ApprovalsPage from './pages/Approvals'
+import DeliveryPage from './pages/Delivery'
 
 function Shell() {
   const { me, can, logout } = useAuth()
@@ -29,7 +34,12 @@ function Shell() {
     can('company.read') && { key: '/companies', icon: <BankOutlined />, label: t('menu.companies') },
     can('company.read') && { key: '/contacts', icon: <ContactsOutlined />, label: t('menu.contacts') },
     can('import.run') && { key: '/imports', icon: <ImportOutlined />, label: t('menu.imports') },
+    can('sequence.read') && { key: '/sequences', icon: <SendOutlined />, label: t('menu.sequences') },
+    can('sequence.read') && { key: '/approvals', icon: <CheckSquareOutlined />, label: t('menu.approvals') },
+    can('sequence.read') && { key: '/delivery', icon: <InboxOutlined />, label: t('menu.delivery') },
+    can('mailbox.read') && { key: '/mailboxes', icon: <MailOutlined />, label: t('menu.mailboxes') },
     can('compliance.read') && { key: '/compliance', icon: <SafetyCertificateOutlined />, label: t('menu.compliance') },
+    can('dsr.manage') && { key: '/dsr', icon: <FileProtectOutlined />, label: t('menu.dsr') },
     can('user.read') && { key: '/users', icon: <TeamOutlined />, label: t('menu.users') },
     can('tenant.read') && { key: '/tenant', icon: <SettingOutlined />, label: t('menu.tenant') },
     can('audit.read') && { key: '/audit', icon: <AuditOutlined />, label: t('menu.audit') },
@@ -60,6 +70,11 @@ function Shell() {
             <Route path="/contacts" element={<ContactsPage />} />
             <Route path="/imports" element={<ImportsPage />} />
             <Route path="/compliance" element={<CompliancePage />} />
+            <Route path="/dsr" element={<DsrPage />} />
+            <Route path="/mailboxes" element={<MailboxesPage />} />
+            <Route path="/sequences" element={<SequencesPage />} />
+            <Route path="/approvals" element={<ApprovalsPage />} />
+            <Route path="/delivery" element={<DeliveryPage />} />
             <Route path="/users" element={<UsersPage />} />
             <Route path="/tenant" element={<TenantPage />} />
             <Route path="/audit" element={<AuditPage />} />

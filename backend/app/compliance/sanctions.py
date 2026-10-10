@@ -64,7 +64,9 @@ def similarity(a: str, b: str) -> float:
     tok = (_token_side(ta, tb) + _token_side(tb, ta)) / 2
     whole = 0.0
     if min(len(a), len(b)) >= 8 and min(len(a), len(b)) / max(len(a), len(b)) >= 0.85:
-        whole = name_similarity(a, b)
+        # 整串用编辑距离比例（不用 Jaro-Winkler：共同前缀如 "hans " 会把 "hans kraft"/"hans wirth" 抬到 0.88）
+        from rapidfuzz import fuzz
+        whole = fuzz.ratio(a, b) / 100
     return round(max(tok, whole), 4)
 
 

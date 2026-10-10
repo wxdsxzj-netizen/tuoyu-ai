@@ -33,6 +33,8 @@ def active_consent(db: Session, email: str | None, channel="email_marketing") ->
 def check_contact(db: Session, contact: Contact, *, channel: str = "email", reverify: bool = False) -> dict:
     blocks, warnings, needs = [], [], []
     email = contact.email
+    if contact.restricted_at:  # BR-5-31 限制处理
+        blocks.append({"code": "COMPLIANCE_RECORD_RESTRICTED", "reason": contact.restricted_reason})
     # 1. 抑制名单（发送时也要再查一次，BR-5-04）
     hits = check_suppressed(db, email=email, company_id=contact.company_id, phone=None, channel=channel)
     if hits:

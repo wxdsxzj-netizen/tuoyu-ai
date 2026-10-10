@@ -40,6 +40,8 @@ def clean():
     from app.compliance.verify import set_mx_resolver, set_verifier
     set_verifier(None)
     set_mx_resolver(None)
+    from app.outreach.dns_check import set_resolver
+    set_resolver(None)
     with engine.begin() as c:
         c.execute(text("TRUNCATE email_verifications, global_bounces, global_suppressions, complaint_events, suppressions, "
                        "consent_records, lia_records, tenant_compliance, screening_hits, sanction_tokens, sanction_entries, "

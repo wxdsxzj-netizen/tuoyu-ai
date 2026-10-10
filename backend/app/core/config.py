@@ -63,6 +63,17 @@ class Settings(BaseSettings):
     public_base_url: str = "http://localhost:8000"
     unsubscribe_secret: str = ""  # 为空时使用 jwt_secret 派生
 
+    # 发件箱 / 发送
+    dns_doh_url: str = ""  # 可选：DNS-over-HTTPS（如 https://dns.google/resolve），用于 UDP DNS 受限的环境
+    credentials_key: str = ""  # Fernet key（urlsafe base64 32 字节）；为空时由 jwt_secret 派生（仅开发）
+    outbound_allow_real: bool = False  # False：只允许发往本地测试 SMTP（localhost / mailpit），绝不外发
+    outbound_sink_hosts: str = "localhost,127.0.0.1,::1,mailpit,mailhog"
+    send_interval_min_s: int = 60
+    send_interval_max_s: int = 300
+    company_daily_limit: int = 3
+    platform_cold_hard_cap: int = 80
+    health_min_sample: int = 50
+
     # 制裁名单
     sanctions_csl_url: str = "https://data.trade.gov/downloadable_consolidated_screening_list/v1/consolidated.csv"
     sanctions_ofac_sdn_url: str = "https://sanctionslistservice.ofac.treas.gov/api/publicationpreview/exports/sdn.csv"

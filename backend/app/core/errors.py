@@ -54,6 +54,24 @@ ERROR_CODES: dict[str, tuple[int, str, str, bool]] = {
     "COMPLIANCE_SUPPRESSED": (403, "收件人在抑制名单中（附来源与渠道）", "Recipient is suppressed", False),
     "COMPLIANCE_SUPPRESSION_LOCKED": (403, "此来源的抑制不能解除", "This suppression cannot be revoked", False),
     "COMPLIANCE_UNSUBSCRIBE_INVALID": (400, "退订链接无效或已损坏", "Invalid unsubscribe link", False),
+    "COMPLIANCE_DSR_UNVERIFIED": (403, "身份核验未通过", "Identity not verified", False),
+    "COMPLIANCE_RECORD_RESTRICTED": (423, "该记录因数据主体请求被限制处理", "Record restricted due to a data subject request", False),
+    "DELIVERY_AUTH_FAILED": (422, "授权失败或已失效，请重新授权", "Mailbox authentication failed", False),
+    "DELIVERY_DNS_INCOMPLETE": (409, "DNS 未配置完成，暂不能发送冷信", "DNS incomplete", False),
+    "DELIVERY_DOMAIN_MAILBOX_LIMIT": (409, "每个开发信域名最多绑定 3 个发件箱", "Max 3 mailboxes per domain", False),
+    "DELIVERY_FREQUENCY_LIMIT": (409, "同一企业今日发送已达上限，已顺延", "Company daily frequency reached", True),
+    "DELIVERY_MAILBOX_PAUSED": (409, "发件箱处于暂停 / 冷却状态", "Mailbox paused", False),
+    "DELIVERY_MAILBOX_TAKEN": (409, "该邮箱已被其他企业绑定", "Mailbox already bound elsewhere", False),
+    "DELIVERY_OUTSIDE_WINDOW": (409, "不在收件人发送时间窗口内，已顺延", "Outside sending window", True),
+    "DELIVERY_PROVIDER_UNAVAILABLE": (503, "该邮箱服务商的接入暂不可用，请改用 IMAP / SMTP", "Provider not available, use IMAP/SMTP", False),  # noqa: E501
+    "DELIVERY_QUOTA_EXHAUSTED": (409, "今日发送额度已用完，已顺延", "Daily quota exhausted", True),
+    "DELIVERY_SMTP_HOST_NOT_ALLOWED": (403, "当前环境只允许发往本地测试邮件服务器", "Only local SMTP sink allowed in this environment", False),  # noqa: E501
+    "SEQ_CONTENT_QA_FAILED": (422, "内容未通过质检，已转人工编辑，未扣费", "Content failed QA", False),
+    "SEQ_ENROLL_DUPLICATE": (409, "联系人已在其他活跃序列中", "Contact already in an active sequence", False),
+    "SEQ_NO_MAILBOX": (422, "没有可用的发件箱", "No available mailbox", False),
+    "SEQ_TEMPLATE_NOT_APPROVED": (409, "模板尚未审批通过", "Template not approved", False),
+    "SEQ_VALIDATION_FAILED": (422, "序列未通过启动检查（列出问题）", "Sequence validation failed", False),
+    "SEQ_REVIEWER_CONFLICT": (409, "审批人不能是提交人本人", "Approver must differ from submitter", False),
     "LLM_UNAVAILABLE": (503, "AI 服务暂不可用", "AI service unavailable", True),
 }
 

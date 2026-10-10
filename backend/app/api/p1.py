@@ -117,7 +117,7 @@ class KItemOut(ORM):
 
 
 class KItemIn(BaseModel):
-    type: str = Field(pattern="^(company_profile|product|certification|case|contact|selling_point|faq)$")
+    type: str = Field(pattern="^(company_profile|product|certification|case|contact|selling_point|faq|boundary)$")
     title: str = Field(min_length=1, max_length=256)
     content: str = Field("", max_length=10000)
     source_ref: str | None = Field(None, max_length=2048)
@@ -553,11 +553,16 @@ class ContactOut(ORM):
     country: str | None
     source: str
     created_at: datetime
+    restricted: bool = False
+    lead_status: str = "new"
 
 
 def contact_out(c: Contact) -> ContactOut:
     o = ContactOut.model_validate(c)
     o.company_name = c.company.name if c.company else None
+    if c.restricted_at:  # BR-5-31：限制处理期间屏蔽个人信息
+        o.restricted = True
+        o.full_name, o.email, o.phone, o.linkedin_url, o.title = "[限制处理]", None, None, None, None
     return o
 
 

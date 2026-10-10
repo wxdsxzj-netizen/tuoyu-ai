@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Table, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, String, Table, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -204,6 +204,10 @@ class Contact(TenantScoped, Base):
     subscriber_type: Mapped[str] = mapped_column(String(16), default="unknown")  # corporate / individual / unknown
     lawful_basis: Mapped[str | None] = mapped_column(String(32), nullable=True)
     sanction_status: Mapped[str] = mapped_column(String(16), default="unscreened")  # unscreened / clear / pending / confirmed
+    restricted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # BR-5-31 限制处理
+    restricted_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lead_status: Mapped[str] = mapped_column(String(16), default="new")  # SM-02 简化：new / contacting / replied / not_interested / suppressed / no_response  # noqa: E501
+    do_not_contact_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     company: Mapped[Company | None] = relationship(lazy="joined")
 
 
@@ -392,3 +396,236 @@ class ScreeningHit(TenantScoped, Base):
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)  # pending / confirmed / false_positive
     reviewed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ======================= P3：DSR / 发件箱 / 序列 =======================
+class DsrRequest(TenantScoped, Base):
+    """数据主体请求（SM-15）。subject_keys 只存哈希；subject_email 在完成删除后清空。"""
+    __tablename__ = "dsr_requests"
+    type: Mapped[str] = mapped_column(String(16))  # access / delete / rectify / object
+    channel: Mapped[str] = mapped_column(String(16), default="manual")  # privacy_email / form / tenant / manual
+    requester_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    requester_contact: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    subject_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    subject_keys: Mapped[list[str]] = mapped_column(ARRAY(String(64)), default=list)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rectify_changes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="received", index=True)
+    # received / verifying / pending_info / processing / completed / rejected
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paused_days: Mapped[int] = mapped_column(Integer, default=0)
+    verification_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verification_method: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    assignee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    found: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    reject_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    alerts_sent: Mapped[list[str]] = mapped_column(ARRAY(String(16)), default=list)
+    timeline: Mapped[list | None] = mapped_column(JSONB, default=list)
+
+
+class SendingDomain(TenantScoped, Base):
+    __tablename__ = "sending_domains"
+    __table_args__ = (UniqueConstraint("tenant_id", "domain"),)
+    domain: Mapped[str] = mapped_column(String(253))
+    purpose: Mapped[str] = mapped_column(String(16), default="outreach")  # main / outreach / backup
+    dkim_selector: Mapped[str | None] = mapped_column(String(63), nullable=True)
+    spf_status: Mapped[str] = mapped_column(String(12), default="unknown")  # pass / fail / unknown
+    dkim_status: Mapped[str] = mapped_column(String(12), default="unknown")
+    dmarc_status: Mapped[str] = mapped_column(String(12), default="unknown")
+    mx_status: Mapped[str] = mapped_column(String(12), default="unknown")
+    check_detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paused: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    @property
+    def dns_ok(self) -> bool:
+        return self.spf_status == self.dkim_status == self.dmarc_status == "pass"
+
+
+class Mailbox(TenantScoped, Base):
+    """发件箱（SM-05）。凭据 Fernet 加密存储，接口永不返回明文。"""
+    __tablename__ = "mailboxes"
+    address: Mapped[str] = mapped_column(String(320), index=True)
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provider: Mapped[str] = mapped_column(String(16), default="imap")  # imap / google / microsoft
+    domain_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("sending_domains.id"), nullable=True)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    smtp_host: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    smtp_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    smtp_security: Mapped[str] = mapped_column(String(10), default="starttls")  # ssl / starttls / none
+    smtp_username: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    smtp_password_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imap_host: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    imap_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    imap_ssl: Mapped[bool] = mapped_column(Boolean, default=True)
+    imap_username: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    imap_password_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imap_last_uid: Mapped[int] = mapped_column(Integer, default=0)
+    auth_status: Mapped[str] = mapped_column(String(12), default="ok")  # ok / expired / revoked
+    status: Mapped[str] = mapped_column(String(16), default="bound")
+    # bound / dns_failed / warming / active / paused / cooling / recovering / auth_failed / disabled / unbound
+    health_score: Mapped[int] = mapped_column(Integer, default=100)
+    health_level: Mapped[str] = mapped_column(String(12), default="normal")  # normal / watch / slow / paused
+    health_note: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    warmup_started_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    daily_cold_limit: Mapped[int] = mapped_column(Integer, default=40)
+    hourly_limit: Mapped[int] = mapped_column(Integer, default=15)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    recovery_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    breaker_count_30d: Mapped[int] = mapped_column(Integer, default=0)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_send_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    signature: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MailboxMetricDaily(TenantOwned, Base):
+    __tablename__ = "mailbox_metrics_daily"
+    __table_args__ = (UniqueConstraint("mailbox_id", "day"),)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    mailbox_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("mailboxes.id", ondelete="CASCADE"), index=True)
+    day: Mapped[date] = mapped_column(Date)
+    sent_cold: Mapped[int] = mapped_column(Integer, default=0)
+    sent_reply: Mapped[int] = mapped_column(Integer, default=0)
+    hard_bounces: Mapped[int] = mapped_column(Integer, default=0)
+    complaints: Mapped[int] = mapped_column(Integer, default=0)
+    replies: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class BreakerEvent(TenantOwned, Base):
+    __tablename__ = "breaker_events"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scope: Mapped[str] = mapped_column(String(12))  # mailbox / domain
+    scope_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    level: Mapped[str] = mapped_column(String(16))  # watch / slow / paused / domain_paused
+    trigger_metric: Mapped[str] = mapped_column(String(32))
+    trigger_value: Mapped[float] = mapped_column(Float)
+    cooldown_hours: Mapped[int] = mapped_column(Integer, default=48)
+    resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    recovered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Sequence(TenantScoped, Base):
+    __tablename__ = "sequences"
+    name: Mapped[str] = mapped_column(String(128))
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft / pending_approval / active / paused / completed / archived
+    icp_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    mailbox_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    autonomy: Mapped[str] = mapped_column(String(8), default="L1")  # L0 全人工 / L1 每封审批 / L2 质检≥85 自动通过
+    language: Mapped[str] = mapped_column(String(8), default="en")
+    send_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
+    sent_count: Mapped[int] = mapped_column(Integer, default=0)
+    window_start: Mapped[int] = mapped_column(Integer, default=8)
+    window_end: Mapped[int] = mapped_column(Integer, default=17)
+    paused_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    submitted_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SequenceStep(TenantOwned, Base):
+    __tablename__ = "sequence_steps"
+    __table_args__ = (UniqueConstraint("sequence_id", "step_no"),)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sequence_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sequences.id", ondelete="CASCADE"), index=True)
+    step_no: Mapped[int] = mapped_column(Integer)
+    wait_days: Mapped[int] = mapped_column(Integer, default=0)
+    mode: Mapped[str] = mapped_column(String(8), default="ai")  # ai / template
+    subject_tpl: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    body_tpl: Mapped[str | None] = mapped_column(Text, nullable=True)
+    instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    purpose: Mapped[str] = mapped_column(String(16), default="first")  # first / followup / breakup
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class Enrollment(TenantScoped, Base):
+    """序列注册（SM-04）。"""
+    __tablename__ = "enrollments"
+    __table_args__ = (Index("ix_enroll_due", "status", "next_run_at"),
+                      Index("uq_enroll_active_contact", "tenant_id", "contact_id", unique=True,
+                            postgresql_where="status IN ('pending_approval','scheduled','active','paused') AND deleted_at IS NULL"))
+    sequence_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sequences.id", ondelete="CASCADE"), index=True)
+    contact_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("contacts.id"), index=True)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="scheduled")
+    # pending_approval / scheduled / active / paused / replied / bounced / unsubscribed / completed / removed / handed_off
+    current_step: Mapped[int] = mapped_column(Integer, default=1)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    mailbox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    paused_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_gate: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    thread_message_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    ended_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class MessageDraft(TenantScoped, Base):
+    __tablename__ = "message_drafts"
+    __table_args__ = (UniqueConstraint("enrollment_id", "step_no"),)
+    enrollment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("enrollments.id", ondelete="CASCADE"), index=True)
+    step_no: Mapped[int] = mapped_column(Integer)
+    step_version: Mapped[int] = mapped_column(Integer, default=1)
+    subject: Mapped[str] = mapped_column(String(256))
+    body: Mapped[str] = mapped_column(Text)
+    facts_used: Mapped[list | None] = mapped_column(JSONB, default=list)
+    personalization: Mapped[str] = mapped_column(String(12), default="light")  # light / medium / degraded
+    qa_score: Mapped[int] = mapped_column(Integer, default=0)
+    qa_detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    rewrite_count: Mapped[int] = mapped_column(Integer, default=0)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending_approval", index=True)
+    # needs_edit / pending_approval / approved / rejected / sent / blocked
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class OutboundMessage(TenantScoped, Base):
+    """已发出邮件 + 内容快照（M7-14，不可修改）。"""
+    __tablename__ = "outbound_messages"
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    draft_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    mailbox_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    to_email: Mapped[str] = mapped_column(String(320))
+    message_id: Mapped[str] = mapped_column(String(256), index=True)
+    subject: Mapped[str] = mapped_column(String(256))
+    body_text: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(8), default="cold")  # cold / reply
+    status: Mapped[str] = mapped_column(String(16), default="sent")  # sent / hard_bounce / soft_bounce / failed
+    snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DeliveryEvent(TenantOwned, Base):
+    __tablename__ = "delivery_events"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    type: Mapped[str] = mapped_column(String(20))
+    # scheduled / gate_blocked / deferred / sent / hard_bounce / soft_bounce / complaint / unsubscribe / reply / ooo
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class InboundMessage(TenantOwned, Base):
+    __tablename__ = "inbound_messages"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    mailbox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    from_email: Mapped[str] = mapped_column(String(320))
+    subject: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    body: Mapped[str] = mapped_column(Text, default="")
+    in_reply_to: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    classified_by: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    needs_human: Mapped[bool] = mapped_column(Boolean, default=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

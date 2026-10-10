@@ -30,6 +30,10 @@ services:
       TL_UPLOAD_DIR: /data/uploads
     volumes: [uploads:/data/uploads]
     depends_on: { backend: { condition: service_started } }
+  mailpit:  # 本地收信器：发件箱 SMTP 主机填 mailpit:1025，Web 界面 http://localhost:8025
+    image: axllent/mailpit:latest
+    ports: ["8025:8025", "1025:1025"]
+
   frontend:
     build: ./frontend
     environment: { VITE_API_PROXY: "http://backend:8000" }

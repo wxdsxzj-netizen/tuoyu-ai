@@ -23,6 +23,12 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "compliance.read": ("查看合规中心", "View compliance"),
     "compliance.manage": ("管理合规设置/解除抑制/审核制裁命中", "Manage compliance"),
     "suppression.add": ("添加抑制名单", "Add suppressions"),
+    "dsr.manage": ("处理数据主体请求", "Handle data subject requests"),
+    "mailbox.read": ("查看发件箱与域名", "View mailboxes"),
+    "mailbox.manage": ("绑定/管理发件箱与域名、熔断恢复", "Manage mailboxes"),
+    "sequence.read": ("查看序列", "View sequences"),
+    "sequence.manage": ("创建/编辑序列、加入联系人", "Manage sequences"),
+    "sequence.approve": ("审批序列与邮件内容", "Approve sequences and content"),
 }
 
 SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {
@@ -30,5 +36,6 @@ SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {
     "admin": ("管理员", set(PERMISSIONS) - {"billing.manage"}),
     "sales": ("业务员", {"tenant.read", "user.read", "job.run", "job.read", "llm.use",
                          "kb.read", "icp.read", "company.read", "company.manage", "contact.enrich", "import.run",
-                         "contact.verify", "compliance.read", "suppression.add"}),
+                         "contact.verify", "compliance.read", "suppression.add",
+                         "mailbox.read", "sequence.read", "sequence.manage"}),
 }

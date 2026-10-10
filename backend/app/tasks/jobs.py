@@ -184,3 +184,105 @@ def refresh_sanctions_task():
         return result
     finally:
         db.close()
+
+
+def _each_tenant(fn, label):
+    from sqlalchemy import select
+
+    from app.core.db import bypass_tenant
+    from app.models import Tenant
+    db = SessionLocal()
+    try:
+        with bypass_tenant():
+            tids = db.scalars(select(Tenant.id).where(Tenant.status == "active")).all()
+    finally:
+        db.close()
+    out = {}
+    for tid in tids:
+        with tenant_context(tid):
+            tdb = SessionLocal()
+            tdb.info["tenant_id"] = tid
+            try:
+                out[str(tid)] = fn(tdb, tid)
+                tdb.commit()
+            except Exception as e:  # noqa: BLE001
+                tdb.rollback()
+                out[str(tid)] = {"error": f"{label}: {type(e).__name__}: {e}"[:300]}
+            finally:
+                tdb.close()
+    return out
+
+
+@celery_app.task(name="outreach.tick")
+def outreach_tick():
+    """每分钟：执行到期的序列步骤（含闸门、额度、窗口检查）。"""
+    from app.outreach.engine import run_due
+    return _each_tenant(lambda db, tid: run_due(db), "outreach")
+
+
+@celery_app.task(name="mailbox.health")
+def mailbox_health_task():
+    """每 15 分钟：健康分 / 熔断 / 预热与恢复期推进。"""
+    from sqlalchemy import select
+
+    from app.models import Mailbox
+    from app.outreach import health
+
+    def fn(db, tid):
+        n = 0
+        for mb in db.scalars(select(Mailbox).where(Mailbox.deleted_at.is_(None), Mailbox.status.not_in(("unbound", "disabled")))):
+            health.tick_lifecycle(db, mb)
+            health.evaluate(db, mb)
+            n += 1
+        return n
+    return _each_tenant(fn, "health")
+
+
+@celery_app.task(name="mailbox.poll")
+def mailbox_poll_task():
+    """每 2 分钟：IMAP 拉取回复。"""
+    from sqlalchemy import select
+
+    from app.models import Mailbox
+    from app.outreach.inbound import poll_mailbox
+
+    def fn(db, tid):
+        n = 0
+        for mb in db.scalars(select(Mailbox).where(Mailbox.deleted_at.is_(None), Mailbox.imap_host.is_not(None),
+                                                   Mailbox.status.not_in(("unbound", "disabled")))):
+            try:
+                n += poll_mailbox(db, mb)
+            except Exception:  # noqa: BLE001  单个邮箱失败不影响其他
+                continue
+        return n
+    return _each_tenant(fn, "poll")
+
+
+@celery_app.task(name="dns.daily")
+def dns_daily_task():
+    from sqlalchemy import select
+
+    from app.api.p3 import refresh_mailbox_status, run_domain_check
+    from app.models import SendingDomain
+
+    def fn(db, tid):
+        n = 0
+        for d in db.scalars(select(SendingDomain).where(SendingDomain.deleted_at.is_(None))):
+            run_domain_check(d)
+            refresh_mailbox_status(db, d)
+            n += 1
+        return n
+    return _each_tenant(fn, "dns")
+
+
+@celery_app.task(name="dsr.daily")
+def dsr_daily_task():
+    """每日：DSR 第 20 天提醒 / 第 25 天升级 / 第 28 天限制处理 / 补件超时关闭。"""
+    from app.compliance.dsr import daily_check
+
+    def fn(db, tid):
+        r = daily_check(db)
+        if any(r.values()):
+            write_audit(db, tenant_id=tid, action="dsr.daily_check", actor_type="system", after=r)
+        return r
+    return _each_tenant(fn, "dsr")
