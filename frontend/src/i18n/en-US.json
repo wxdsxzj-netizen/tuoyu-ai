@@ -1,0 +1,10 @@
+{
+  "app": { "name": "Tuoyu AI", "logout": "Sign out" },
+  "menu": { "dashboard": "Dashboard", "users": "Members", "tenant": "Organization", "audit": "Audit log", "jobs": "Jobs & AI" },
+  "login": { "title": "Sign in to Tuoyu AI", "email": "Email", "password": "Password", "submit": "Sign in", "toRegister": "Create an organization", "toLogin": "Back to sign in", "register": "Register", "tenantName": "Company name", "name": "Your name" },
+  "users": { "add": "Add member", "email": "Email", "name": "Name", "role": "Role", "status": "Status", "active": "Active", "disabled": "Disabled", "lastLogin": "Last login", "actions": "Actions", "edit": "Edit", "delete": "Delete", "confirmDelete": "Delete this member?", "password": "Initial password", "newPassword": "New password (optional)", "search": "Search name or email" },
+  "tenant": { "name": "Company name", "slug": "Slug", "locale": "Language", "timezone": "Time zone", "save": "Save" },
+  "audit": { "time": "Time", "actor": "Actor", "action": "Action", "object": "Object", "result": "Result", "ip": "IP", "detail": "Changes" },
+  "jobs": { "run": "Run example job", "status": "Status", "progress": "Progress", "result": "Result", "chat": "Test AI gateway", "send": "Send" },
+  "common": { "ok": "OK", "cancel": "Cancel", "saved": "Saved", "required": "Required", "refresh": "Refresh", "welcome": "Welcome, {{name}}", "tenantOf": "Organization: {{tenant}}", "role": "Role: {{role}}" }
+}
