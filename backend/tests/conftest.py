@@ -4,6 +4,8 @@ os.environ.setdefault("TL_DATABASE_URL", "postgresql+psycopg://tl:tl@localhost:5
 os.environ["TL_CELERY_EAGER"] = "true"
 os.environ["TL_LLM_PRIMARY"] = "mock"
 os.environ["TL_LLM_FALLBACK"] = ""
+os.environ["TL_DEEPSEEK_API_KEY"] = ""  # 测试永不使用真实 Key
+os.environ["TL_QWEN_API_KEY"] = ""
 os.environ["TL_PLATFORM_ADMIN_TOKEN"] = "test-platform-token"
 os.environ["TL_CRAWL_ALLOW_PRIVATE"] = "true"
 os.environ["TL_UPLOAD_DIR"] = "/tmp/tuoyu-test-uploads"

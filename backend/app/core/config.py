@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 
 from pydantic import AliasChoices, Field
@@ -5,7 +6,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="TL_", extra="ignore", populate_by_name=True)
+    # 本地开发：密钥只放在 ~/.secrets/trade-leads.env（权限 600，不入库）；可用 TL_SECRETS_FILE 改路径。生产用环境变量注入。
+    model_config = SettingsConfigDict(env_file=(".env", os.path.expanduser(os.environ.get("TL_SECRETS_FILE", "~/.secrets/trade-leads.env"))),  # noqa: E501
+                                      env_prefix="TL_", extra="ignore", populate_by_name=True)
 
     env: str = "dev"
     database_url: str = "postgresql+psycopg://tl:tl@localhost:5432/tradeleads"
@@ -19,12 +22,13 @@ class Settings(BaseSettings):
     # LLM 网关：mock | qwen | deepseek
     llm_primary: str = "mock"
     llm_fallback: str = ""
-    qwen_api_key: str = ""
+    qwen_api_key: str = Field("", repr=False)
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_model: str = "qwen-plus"
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com/v1"
-    deepseek_model: str = "deepseek-chat"
+    deepseek_api_key: str = Field("", validation_alias=AliasChoices("TL_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"), repr=False)
+    deepseek_base_url: str = "https://api.deepseek.com"  # 官方 OpenAI 兼容端点（2026-10 文档）
+    deepseek_model: str = "deepseek-flash"  # DeepSeek-V4.1-Flash；更强可选 deepseek-v4-pro
+    deepseek_thinking: str = "disabled"  # disabled：非思考模式（便宜、支持 temperature）；enabled：思考模式
     llm_timeout_s: float = 60.0
 
     # P6：点数 / Agent / 询盘评分（均可通过环境变量调整）

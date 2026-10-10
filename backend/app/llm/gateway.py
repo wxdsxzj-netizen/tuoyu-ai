@@ -1,4 +1,4 @@
-"""统一 LLM 网关：主用通义千问（阿里云百炼，OpenAI 兼容接口），DeepSeek 兜底，测试用 mock。
+"""统一 LLM 网关：通义千问 / DeepSeek（OpenAI 兼容接口），测试用 mock。当前本地主用 DeepSeek（千问 Key 未提供）。
 
 调用方只依赖 `get_gateway().chat(messages, ...)`，模型切换全部走配置（TL_LLM_PRIMARY / TL_LLM_FALLBACK）。
 """
@@ -58,27 +58,55 @@ class MockProvider:
                           completion_tokens=len(content) // 4)
 
 
+# 进程内用量统计（不含任何密钥），用于评测 / 验证脚本汇报 token 与成本
+USAGE: dict[str, dict] = {}
+
+
+def _record(res: "ChatResult", cache_hit: int = 0):
+    u = USAGE.setdefault(f"{res.provider}:{res.model}", {"calls": 0, "prompt": 0, "completion": 0, "cache_hit": 0})
+    u["calls"] += 1
+    u["prompt"] += res.prompt_tokens
+    u["completion"] += res.completion_tokens
+    u["cache_hit"] += cache_hit
+
+
 class OpenAICompatProvider:
-    def __init__(self, name: str, base_url: str, api_key: str, model: str, timeout: float):
+    def __init__(self, name: str, base_url: str, api_key: str, model: str, timeout: float, extra: dict | None = None):
         self.name, self.base_url, self.api_key, self.model, self.timeout = name, base_url.rstrip("/"), api_key, model, timeout
+        self.extra = extra or {}
+
+    def __repr__(self):  # 永不暴露 Key
+        return f"<{self.name} {self.model}>"
 
     def chat(self, messages, *, temperature=0.3, max_tokens=1024, json_mode=False):
         if not self.api_key:
             raise LLMError(f"{self.name}: 未配置 API Key")
-        body = {"model": self.model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        body = {"model": self.model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens, **self.extra}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+            if not any("json" in (m.get("content") or "").lower() for m in messages):  # DeepSeek JSON 模式要求提示词含 "json"
+                body["messages"] = [{"role": "system", "content": "Respond in JSON."}] + messages
         try:
             r = httpx.post(f"{self.base_url}/chat/completions", json=body, timeout=self.timeout,
                            headers={"Authorization": f"Bearer {self.api_key}"})
-            r.raise_for_status()
-            data = r.json()
         except httpx.HTTPError as e:
-            raise LLMError(f"{self.name}: {e}") from e
+            raise LLMError(f"{self.name}: {type(e).__name__}") from None  # 不带请求头 / Key
+        if r.status_code >= 400:
+            msg = ""
+            try:
+                msg = ((r.json().get("error") or {}).get("message") or "")[:200]
+            except ValueError:
+                pass
+            raise LLMError(f"{self.name}: HTTP {r.status_code} {msg}".strip())
+        data = r.json()
         usage = data.get("usage") or {}
-        return ChatResult(content=data["choices"][0]["message"]["content"], provider=self.name,
-                          model=data.get("model", self.model), prompt_tokens=usage.get("prompt_tokens", 0),
-                          completion_tokens=usage.get("completion_tokens", 0), raw=data)
+        content = (data["choices"][0]["message"].get("content") or "").strip()
+        if not content:
+            raise LLMError(f"{self.name}: 空回复（finish_reason={data['choices'][0].get('finish_reason')}）")
+        res = ChatResult(content=content, provider=self.name, model=data.get("model", self.model),
+                         prompt_tokens=usage.get("prompt_tokens", 0), completion_tokens=usage.get("completion_tokens", 0), raw=data)
+        _record(res, usage.get("prompt_cache_hit_tokens", 0))
+        return res
 
 
 def build_provider(name: str, s: Settings) -> Provider:
@@ -87,7 +115,8 @@ def build_provider(name: str, s: Settings) -> Provider:
     if name == "qwen":
         return OpenAICompatProvider("qwen", s.qwen_base_url, s.qwen_api_key, s.qwen_model, s.llm_timeout_s)
     if name == "deepseek":
-        return OpenAICompatProvider("deepseek", s.deepseek_base_url, s.deepseek_api_key, s.deepseek_model, s.llm_timeout_s)
+        extra = {"thinking": {"type": s.deepseek_thinking}} if s.deepseek_thinking in ("enabled", "disabled") else {}
+        return OpenAICompatProvider("deepseek", s.deepseek_base_url, s.deepseek_api_key, s.deepseek_model, s.llm_timeout_s, extra)
     raise ValueError(f"未知 LLM 提供方: {name}")
 
 

@@ -41,15 +41,44 @@ def rule_parse(text: str) -> dict:
             "company_type": ctype, "roles": roles or ["purchasing"], "product": pm.group(2).strip("，, ") if pm else None, "source": "rules"}  # noqa: E501
 
 
+INTENT_PROMPT = (
+    "Parse a foreign-trade prospecting command (Chinese or English) into JSON with keys: "
+    "type: \"prospect\" (find companies/contacts) | \"research\" (background-check given companies/domains) | \"help\" (how-to question about the software); "  # noqa: E501
+    "count: integer or null (number of companies requested); country: ISO 3166-1 alpha-2 uppercase or null; "
+    "industry: short ENGLISH keyword (e.g. HVAC, valves, water treatment, solar) or null; "
+    "company_type: one of distributor/importer/wholesaler/retailer/contractor/manufacturer or null; "
+    "roles: list of ENGLISH lowercase job roles to contact (e.g. purchasing, procurement, project manager, ceo, engineer), [] if not stated; "  # noqa: E501
+    "product: the seller's product to promote or null; targets: list of company domains for research, else []. "
+    "Only fill fields explicitly stated in the command; never guess or add extra values. For research/help leave count/country/industry null and roles [].")  # noqa: E501
+
+
+def _normalize(d: dict) -> dict:
+    """模型输出规范化：国家 ISO2 大写、角色英文小写去重、类型受控；research/help 不保留臆测字段。"""
+    c = d.get("country")
+    d["country"] = c.upper() if isinstance(c, str) and len(c) == 2 and c.isalpha() else None
+    d["roles"] = sorted({str(r).strip().lower() for r in (d.get("roles") or []) if str(r).strip().isascii() and str(r).strip()})
+    if d.get("company_type") not in (None, "distributor", "importer", "wholesaler", "retailer", "contractor", "manufacturer"):
+        d["company_type"] = None
+    n = d.get("count")
+    d["count"] = n if isinstance(n, int) and 0 < n <= 5000 else None
+    d["targets"] = [t.lower() for t in (d.get("targets") or []) if isinstance(t, str) and "." in t]
+    if d["type"] != "prospect":
+        d.update(count=None, country=None, industry=None, company_type=None, roles=[])
+    elif not d["roles"]:
+        d["roles"] = ["purchasing"]
+    return d
+
+
 def parse(text: str) -> dict:
     """先走大模型网关（JSON 模式）；mock 或解析失败时回落到规则。"""
     if True:
         try:
             from app.llm.gateway import get_gateway
-            r = get_gateway().chat([{"role": "system", "content": "把外贸获客任务解析为 JSON：type(prospect/research/help)、count、country(ISO2)、"  # noqa: E501
-                                     "industry、company_type、roles[]、product、targets[]"}, {"role": "user", "content": text}], json_mode=True)  # noqa: E501
+            r = get_gateway().chat([{"role": "system", "content": INTENT_PROMPT}, {"role": "user", "content": text}],
+                                   json_mode=True, temperature=0, max_tokens=200)
             d = json.loads(r.content)
             if isinstance(d, dict) and d.get("type") in ("prospect", "research", "help"):
+                d = _normalize(d)
                 d["source"], d["model"] = "llm", r.model
                 return d
         except Exception:  # noqa: BLE001 —— 网关不可用或 mock 返回非结构化内容

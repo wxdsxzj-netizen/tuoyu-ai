@@ -53,13 +53,21 @@ def main(argv=None):
     mi.add_argument("--method")
     mi.add_argument("--ref")
     mi.add_argument("--operator", default="cli")
-    sub.add_parser("eval")  # B5 X1：AI 评测，未达门槛返回 1
+    ev = sub.add_parser("eval")  # B5 X1：AI 评测，未达门槛返回 1
+    ev.add_argument("--mode", choices=["rules", "model"], default="rules", help="model：逐条调用真实模型（产生费用）")
+    ev.add_argument("--verbose", action="store_true")
     a = ap.parse_args(argv)
     if a.cmd == "eval":
         from app.b5.evals import run_all
-        r = run_all()
+        from app.llm.gateway import USAGE
+        r = run_all(mode=a.mode)
         for x in r["suites"]:
-            print(f"{x['suite']:<10} {x['passed']}/{x['total']} score={x['score']} threshold={x['threshold']} {'OK' if x['ok'] else 'FAIL'} ({x['prompt_version']})")  # noqa: E501
+            print(f"{x['suite']:<10} {x['passed']}/{x['total']} score={x['score']} threshold={x['threshold']} {'OK' if x['ok'] else 'FAIL'} ({x['prompt_version']}, {x['model']})")  # noqa: E501
+            if a.verbose:
+                for f in x["failures"]:
+                    print("    FAIL", str(f["input"])[:80], "expect=", f["expect"], "got=", f["got"])
+        if USAGE:
+            print("usage", USAGE)
         return 0 if r["ok"] else 1
     db = SessionLocal()
     try:

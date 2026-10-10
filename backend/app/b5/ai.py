@@ -25,8 +25,8 @@ from app.models import (
 )
 
 # ---------------- 提示词版本（变更管理） ----------------
-PROMPT_VERSIONS = {"writer": "w-2026.10.2", "reply": "r-2026.10.1", "intent": "i-2026.10.1", "research_qa": "q-2026.10.1",
-                   "ask_data": "d-2026.10.1", "classify": "c-2026.10.1"}
+PROMPT_VERSIONS = {"writer": "w-2026.10.2", "reply": "r-2026.10.1", "intent": "i-2026.10.2", "research_qa": "q-2026.10.1",
+                   "ask_data": "d-2026.10.1", "classify": "c-2026.10.2"}
 
 # ---------------- 提示注入防护 ----------------
 INJECTION = [r"ignore (all |the )?(previous|prior|above) (instructions|prompts?)", r"disregard (the )?(system|previous)", r"you are now",
