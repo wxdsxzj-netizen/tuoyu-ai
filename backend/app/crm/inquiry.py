@@ -43,6 +43,47 @@ SCAM = {  # 诈骗特征（BR-4-07 + AC-4-03），每项 −25
 BIG_ORDER = re.compile(r"\b(\d{2,3},?\d{3,}|\d+\s*(k|million))\s*(pcs|units|sets|usd|\$)?|\b\d+\s*containers?\b", re.I)
 
 
+# ---------------- 官网核验（P6：试点放宽） ----------------
+_site_fetcher = None  # 测试注入：fn(domain) -> (title, text) | None
+
+
+def set_site_fetcher(fn):
+    global _site_fetcher
+    _site_fetcher = fn
+
+
+def _fetch_site(domain: str):
+    if _site_fetcher is not None:
+        return _site_fetcher(domain)
+    import httpx
+
+    from app.core.config import get_settings
+    from app.data.crawler import UrlNotAllowed, check_url_allowed, parse_html
+    url = f"https://{domain}/"
+    try:
+        check_url_allowed(url)
+        r = httpx.get(url, timeout=6, follow_redirects=True, headers={"User-Agent": get_settings().crawl_user_agent})
+        if r.status_code != 200 or "html" not in r.headers.get("content-type", ""):
+            return None
+        page, _ = parse_html(str(r.url), r.text[:300_000])
+        return page.title, f"{page.meta_description} {page.text[:5000]}"
+    except (UrlNotAllowed, httpx.HTTPError, ValueError):
+        return None
+
+
+def website_matches(domain: str, text: str, display_name: str = "") -> tuple[bool, str]:
+    """企业邮箱域名能打开真实官网，且官网标题 / 正文与发件公司吻合（域名主体词或来信署名中的公司名出现在官网上）。"""
+    site = _fetch_site(domain)
+    if not site:
+        return False, "官网无法访问"
+    title, body = (site[0] or "").lower(), (site[1] or "").lower()
+    stem = domain.split(".")[0].lower()
+    words = [w for w in re.split(r"[-_]", stem) if len(w) >= 3 and w not in ("www", "the", "group", "gmbh", "ltd", "inc", "co")]
+    names = re.findall(r"\b([A-Z][\w&]+(?:\s+[A-Z][\w&]+){0,3})\s+(?:GmbH|Ltd\.?|Inc\.?|LLC|S\.?A\.?|S\.?r\.?l\.?|B\.?V\.?|Co\.?)", text + " " + display_name)  # noqa: E501
+    hit = [w for w in words if w in title or w in body] + [n for n in names if n.lower() in title or n.lower() in body]
+    return (bool(hit), "官网吻合：" + "、".join(hit[:3])) if hit else (False, "官网与发件公司不吻合")
+
+
 def _clip(x: float) -> int:
     return int(max(0, min(100, round(x))))
 
@@ -55,7 +96,14 @@ def authenticity(db: Session, *, email: str, text: str, company: Company | None,
         s += 25
         items.append(("企业邮箱且与官网域名一致", 25))
     elif not free and dom and not company:
-        items.append(("企业邮箱（未匹配到公司官网）", 0))
+        from app.core.config import get_settings
+        cfg = get_settings()
+        ok, why = website_matches(dom, text) if cfg.inq_website_check else (False, "官网核验已关闭")
+        if ok:
+            s += cfg.inq_website_bonus
+            items.append((f"企业邮箱域名有真实官网且与发件公司吻合（{why}）", cfg.inq_website_bonus))
+        else:
+            items.append((f"企业邮箱（未匹配到公司官网：{why}）", 0))
     if company:
         s += 25
         items.append(("公司可在数据库中验证", 25))
@@ -118,7 +166,8 @@ def fit(db: Session, company: Company | None, country: str | None) -> tuple[int,
 
 
 def grade_of(score: int, auth: int) -> str:
-    if auth < 40:
+    from app.core.config import get_settings
+    if auth < get_settings().inq_d_auth_threshold:
         return "D"  # 附加规则：真实性 < 40 一律 D
     return "A" if score >= 80 else "B" if score >= 60 else "C" if score >= 40 else "D"
 
@@ -248,12 +297,16 @@ def score(db: Session, inq: Inquiry, text: str) -> None:
     a, a_items, risks = authenticity(db, email=inq.peer_email or "", text=text, company=company, account=acc)
     c, c_items = clarity(text)
     f, f_items = fit(db, company, inq.country)
-    total = _clip(a * 0.40 + c * 0.35 + f * 0.25)
+    from app.core.config import get_settings
+    cfg = get_settings()
+    wsum = (cfg.inq_w_authenticity + cfg.inq_w_clarity + cfg.inq_w_fit) or 1.0
+    wa, wc, wf = cfg.inq_w_authenticity / wsum, cfg.inq_w_clarity / wsum, cfg.inq_w_fit / wsum
+    total = _clip(a * wa + c * wc + f * wf)
     inq.authenticity_score, inq.clarity_score, inq.fit_score, inq.score = a, c, f, total
     inq.grade = grade_of(total, a)
     inq.risk_flags = risks
     inq.country = inq.country or (company.country if company else None)
-    inq.score_detail = {"formula": "真实性×40% + 需求明确度×35% + 客户匹配度×25%",
+    inq.score_detail = {"formula": f"真实性×{wa:.0%} + 需求明确度×{wc:.0%} + 客户匹配度×{wf:.0%}",
                         "authenticity": [{"item": n, "points": p} for n, p in a_items],
                         "clarity": [{"item": n, "points": p} for n, p in c_items],
                         "fit": [{"item": n, "points": p} for n, p in f_items],

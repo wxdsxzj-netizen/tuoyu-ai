@@ -20,3 +20,15 @@ celery_app.conf.update(
         "crm-daily": {"task": "crm.daily", "schedule": crontab(hour=23, minute=0)},
     }, task_default_retry_delay=10, timezone="UTC", task_serializer="json",  # noqa: E501
 )
+
+
+from celery.signals import after_setup_logger  # noqa: E402
+
+
+@after_setup_logger.connect
+def _json_logs(logger, **_):  # 生产 TL_LOG_JSON=true 时 worker 也输出结构化日志
+    from app.core.config import get_settings
+    from app.core.observability import JsonFormatter
+    if get_settings().log_json:
+        for h in logger.handlers:
+            h.setFormatter(JsonFormatter())

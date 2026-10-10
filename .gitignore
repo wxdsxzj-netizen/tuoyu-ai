@@ -8,3 +8,5 @@ dist/
 .env
 *.log
 celerybeat-schedule*
+deploy/.env.prod
+backups/

@@ -6,6 +6,7 @@ import httpx
 import pytest
 from sqlalchemy import text
 
+from app.core.config import get_settings
 from app.core.db import SessionLocal, tenant_context
 from app.crm import inquiry as im
 from app.models import Inquiry
@@ -129,6 +130,16 @@ def test_inquiry_score_rules_sla_review_merge(client):
     assert {"inquiry.rule.create", "inquiry.assign", "inquiry.review"} <= acts
 
 
+def topup(client, h, amount=1000.0):
+    from app.agent import credits
+    tid = _ctx_db(client, h)
+    db = SessionLocal()
+    with tenant_context(tid):
+        credits.grant(db, amount, note="测试充值", operator="test")
+        db.commit()
+    db.close()
+
+
 def _companies(client, h, n=3, country="DE"):
     ids = []
     for i in range(n):
@@ -140,8 +151,9 @@ def _companies(client, h, n=3, country="DE"):
     return ids
 
 
-def test_agent_prospect_task_plan_gate_credits_rollback(client):
+def test_agent_prospect_task_plan_gate_credits_rollback(client, monkeypatch):
     h = register(client, "o@a.com")
+    topup(client, h)
     admin, ah = add_user(client, h, "ad@a.com", "admin")
     s1, sh = add_user(client, h, "s1@a.com", "sales")
     from tests.test_p3 import ready_tenant
@@ -172,8 +184,11 @@ def test_agent_prospect_task_plan_gate_credits_rollback(client):
     r = client.post(f"{P}/agent/tasks/{tb['id']}:confirm", headers=sh)
     assert r.status_code == 409 and r.json()["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
     # 确认 → 执行到审批节点暂停
+    cfg = get_settings()
+    monkeypatch.setattr(cfg, "agent_overrun_basis", "mid")
+    monkeypatch.setattr(cfg, "agent_overrun_ratio", 1.2)
     t = client.post(f"{P}/agent/tasks/{t['id']}:confirm", headers=sh).json()
-    # 模拟数据源 100% 命中 → 实际消耗超过预估中位数的 120% → 自动暂停（BR-12-02），用户确认后继续
+    # 参照可配置：此处设为“中位数 × 1.2”（PRD 原文）。模拟数据源 100% 命中 → 超出 → 自动暂停，用户确认后继续
     assert t["status"] == "paused" and t["pause_reason"] == "over_estimate", t
     t = client.post(f"{P}/agent/tasks/{t['id']}:resume", headers=sh).json()
     assert t["status"] == "waiting_approval" and t["pending_approval"]["tool"] == "list.enroll", t
@@ -218,6 +233,7 @@ def test_agent_prospect_task_plan_gate_credits_rollback(client):
 
 def test_agent_reject_list_batch_and_pause(client):
     h = register(client, "o@a.com")
+    topup(client, h)
     _companies(client, h, 2)
     t = client.post(f"{P}/agent/tasks", headers=h, json={"text": "找 2 家德国暖通进口商的采购经理"}).json()
     t = client.post(f"{P}/agent/tasks/{t['id']}:confirm", headers=h).json()
@@ -242,6 +258,7 @@ def test_agent_reject_list_batch_and_pause(client):
 
 def test_research_report_evidence_robots_cache(client):
     h = register(client, "o@a.com")
+    topup(client, h)
     _, sh = add_user(client, h, "s1@a.com", "sales")
     c = client.post(f"{P}/companies", headers=h, params={"force": True},
                     json={"name": "Kraft HVAC GmbH", "domain": "kraft-hvac.de", "country": "DE", "industry": "HVAC"}).json()["company"]

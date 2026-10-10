@@ -1,0 +1,53 @@
+groups:
+  - name: tuoyu
+    rules:
+      - alert: BackendDown
+        expr: up{job="tuoyu-backend"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "后端不可用（/metrics 抓取失败超过 2 分钟）" }
+      - alert: DatabaseDown
+        expr: tl_db_up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations: { summary: "数据库不可用" }
+      - alert: High5xxRate
+        expr: sum(rate(tl_http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(tl_http_requests_total[5m])), 1e-9) > 0.02
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "5xx 比例超过 2%（10 分钟）" }
+      - alert: SlowApiP95
+        expr: histogram_quantile(0.95, sum by (le) (rate(tl_http_request_seconds_bucket{route!~"/api/v1/(research|agent/tasks.*)"}[10m]))) > 2
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "接口 P95 超过 2 秒" }
+      - alert: MailboxCircuitBreakerOpen
+        expr: sum(tl_breaker_open) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "有发件箱 / 域名处于熔断状态，请到“发件箱”页面处理" }
+      - alert: InquiriesOverdue
+        expr: sum(tl_inquiries_overdue{grade=~"A|B"}) > 0
+        for: 30m
+        labels: { severity: warning }
+        annotations: { summary: "A/B 级询盘超时未响应" }
+      - alert: DsrBacklog
+        expr: sum(tl_dsr_open) > 0
+        for: 7d
+        labels: { severity: warning }
+        annotations: { summary: "数据主体请求积压超过 7 天（法定时限 30 天）" }
+      - alert: DiskAlmostFull
+        expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}) < 0.15
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "根分区可用空间低于 15%" }
+      - alert: HighMemory
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.9
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "内存使用超过 90%" }
+      - alert: BackupMissing
+        expr: time() - node_textfile_backup_last_success_timestamp > 26 * 3600
+        for: 30m
+        labels: { severity: warning }
+        annotations: { summary: "超过 26 小时没有成功的数据库备份（需启用 node-exporter textfile 收集器，见 DEPLOY.md）" }

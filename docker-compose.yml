@@ -12,6 +12,7 @@ services:
     healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, retries: 10 }
   backend:
     build: ./backend
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     env_file: [.env]
     environment:
       TL_DATABASE_URL: postgresql+psycopg://tl:tl@postgres:5432/tradeleads

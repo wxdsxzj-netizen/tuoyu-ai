@@ -145,11 +145,13 @@ def run(db: Session, t: AgentTask, user) -> AgentTask:
             failed_any = True
             if tool in CRITICAL:
                 return _finish(db, t, "failed")
-        mid = (t.estimate or {}).get("mid") or 0
+        from app.core.config import get_settings
+        cfg = get_settings()
+        ref = ((t.estimate or {}).get(cfg.agent_overrun_basis) or 0) * cfg.agent_overrun_ratio
         acked = (t.context or {}).get("overrun_ack")
-        if mid > 0 and not acked and t.credits_used >= mid * OVERRUN and t.current_step < len(plan):  # BR-12-02
+        if ref > 0 and not acked and t.credits_used > ref + 1e-9 and t.current_step < len(plan):  # BR-12-02（参照可配置）
             t.status, t.pause_reason = "paused", "over_estimate"
-            notify(db, "N-11", [t.created_by], "Agent 任务消耗超过预估 120%，已自动暂停", t.input_text[:60], object_type="agent_task",
+            notify(db, "N-11", [t.created_by], "Agent 任务实际消耗超过预估，已自动暂停", t.input_text[:60], object_type="agent_task",
                    object_id=t.id, action_url="/agent", level="warn")
             return t
     return _finish(db, t, "partial" if failed_any else "completed")

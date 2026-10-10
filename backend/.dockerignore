@@ -2,3 +2,6 @@ __pycache__
 .pytest_cache
 .ruff_cache
 .env
+tests/__pycache__
+celerybeat-schedule*
+*.pyc

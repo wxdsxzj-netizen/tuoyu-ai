@@ -36,7 +36,10 @@ def migrate():
 
 @pytest.fixture(autouse=True)
 def clean():
+    from app.crm.inquiry import set_site_fetcher
+    set_site_fetcher(lambda d: None)  # 测试不访问外网：官网核验默认“无法访问”
     yield
+    set_site_fetcher(None)
     from app.compliance.verify import set_mx_resolver, set_verifier
     set_verifier(None)
     set_mx_resolver(None)

@@ -26,3 +26,4 @@ ruff==0.17.0
 SQLAlchemy==2.1.4
 tzdata==2026.5
 uvicorn==0.54.0
+prometheus-client==0.21.1

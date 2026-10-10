@@ -944,3 +944,25 @@ class ResearchReport(TenantScoped, Base):
     robots_skipped: Mapped[list | None] = mapped_column(JSONB, default=list)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class Invoice(TenantOwned, Base):
+    """手工发票 / 收款记录（P6：不接在线支付，由平台管理员登记）。"""
+    __tablename__ = "invoices"
+    __table_args__ = (UniqueConstraint("invoice_no"),)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    invoice_no: Mapped[str] = mapped_column(String(32))
+    period: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 如 2026-10 或 2026Q4
+    description: Mapped[str] = mapped_column(String(256), default="")
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3), default="CNY")
+    credits: Mapped[float] = mapped_column(Float, default=0)  # 随发票发放的点数（标记已付款时入账）
+    status: Mapped[str] = mapped_column(String(10), default="issued")  # issued / paid / void
+    payment_method: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 银行转账 / 支付宝 / 对公 ...
+    payment_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    credit_entry_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    operator: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

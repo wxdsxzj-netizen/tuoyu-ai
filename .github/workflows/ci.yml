@@ -1,5 +1,7 @@
 name: CI
-on: [push, pull_request]
+on:
+  push: { branches: [main, master] }
+  pull_request:
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -9,21 +11,43 @@ jobs:
         env: { POSTGRES_USER: tl, POSTGRES_PASSWORD: tl, POSTGRES_DB: tradeleads_test }
         ports: ["5432:5432"]
         options: --health-cmd "pg_isready -U tl" --health-interval 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 10
+    env:
+      TL_DATABASE_URL: postgresql+psycopg://tl:tl@localhost:5432/tradeleads_test
+      TL_REDIS_URL: redis://localhost:6379/0
     defaults: { run: { working-directory: backend } }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt
-      - run: ruff check .
-      - run: pytest -q
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: backend/requirements*.txt }
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check app tests
+      - name: 迁移可从零执行
+        run: alembic upgrade head
+      - run: pytest -q -p no:cacheprovider
   frontend:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: frontend } }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: "20" }
+        with: { node-version: "20", cache: npm, cache-dependency-path: frontend/package-lock.json }
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+  docker:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: 校验生产编排
+        run: cp deploy/.env.prod.example deploy/.env.prod && docker compose -f docker-compose.prod.yml --env-file deploy/.env.prod config -q
+      - name: 构建生产镜像（不推送）
+        run: |
+          docker build -t tuoyu-backend:ci backend
+          docker build -t tuoyu-web:ci -f frontend/Dockerfile.prod frontend
+      - name: 脚本语法
+        run: for f in deploy/scripts/*.sh; do bash -n "$f"; done

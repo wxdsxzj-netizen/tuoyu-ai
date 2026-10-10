@@ -27,6 +27,19 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-chat"
     llm_timeout_s: float = 60.0
 
+    # P6：点数 / Agent / 询盘评分（均可通过环境变量调整）
+    pilot_grant_credits: float = 0.0  # 新租户首次使用时自动发放的点数；默认 0 = 只能由平台管理员手动充值
+    agent_overrun_basis: str = "high"  # 自动暂停的参照：high（预估上限，默认）| mid（预估中位数，PRD 原文）
+    agent_overrun_ratio: float = 1.0  # 实际消耗 > 参照 × 比例 时自动暂停
+    inq_w_authenticity: float = 0.40
+    inq_w_clarity: float = 0.35
+    inq_w_fit: float = 0.25
+    inq_website_bonus: int = 25  # 企业邮箱域名有可访问官网且与发件公司吻合时的加分（公司不在数据中枢时生效）
+    inq_website_check: bool = True
+    inq_d_auth_threshold: int = 40  # 真实性低于此分一律 D
+    log_json: bool = False  # 结构化日志（生产建议 true）
+    metrics_token: str = ""  # /metrics 访问令牌；为空则只允许内网（反向代理不转发 /metrics）
+
     # 平台管理员（开通租户）。为空则禁用 HTTP 接口，只能用命令行
     platform_admin_token: str = ""
 
@@ -80,6 +93,36 @@ class Settings(BaseSettings):
     sanctions_ofac_alt_url: str = "https://sanctionslistservice.ofac.treas.gov/api/publicationpreview/exports/alt.csv"
     sanctions_threshold: float = 0.85
     sanctions_stale_hours: int = 72
+
+
+DEV_JWT = "change-me-in-production-please-32b+"
+
+
+def production_problems(s: "Settings") -> list[str]:
+    """TL_ENV=prod 时启动前自检：缺少或使用默认值的关键密钥直接拒绝启动。"""
+    p = []
+    if len(s.jwt_secret) < 32 or s.jwt_secret == DEV_JWT:
+        p.append("TL_JWT_SECRET 未设置或太短（≥ 32 位）")
+    if not s.credentials_key:
+        p.append("TL_CREDENTIALS_KEY 未设置（发件箱密码加密密钥）")
+    else:
+        try:
+            from cryptography.fernet import Fernet
+            for k in s.credentials_key.split(","):
+                Fernet(k.strip().encode())
+        except Exception:  # noqa: BLE001
+            p.append("TL_CREDENTIALS_KEY 不是有效的 Fernet 密钥")
+    if len(s.unsubscribe_secret) < 16:
+        p.append("TL_UNSUBSCRIBE_SECRET 未设置或太短（≥ 16 位）")
+    if not s.public_base_url.startswith("https://"):
+        p.append("TL_PUBLIC_BASE_URL 必须是 https:// 地址")
+    if s.crawl_allow_private:
+        p.append("TL_CRAWL_ALLOW_PRIVATE 生产必须为 false")
+    if s.celery_eager:
+        p.append("TL_CELERY_EAGER 生产必须为 false")
+    if s.llm_primary == "mock":
+        p.append("警告：TL_LLM_PRIMARY=mock，AI 功能为模拟结果")
+    return p
 
 
 @lru_cache

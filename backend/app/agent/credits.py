@@ -8,12 +8,11 @@ from app.models import CreditEntry
 
 PRICE_VERSION = "2026.1"
 PRICES = {"SEARCH": 0.0, "EMAIL_FIND": 1.0, "EMAIL_VERIFY": 0.2, "RESEARCH": 2.0, "AI_WRITE": 0.1, "EMAIL_SEND": 0.0, "SEQUENCE": 0.0}
-PILOT_GRANT = 1000.0  # 试点租户首次使用时赠送（账单与套餐在 M13 落地前的占位）
-
-
 def balance(db: Session) -> float:
-    if not db.scalar(select(func.count()).select_from(CreditEntry).where(CreditEntry.entry_type == "grant")):
-        db.add(CreditEntry(entry_type="grant", credits=PILOT_GRANT, note="试点赠送点数"))
+    from app.core.config import get_settings
+    pilot = get_settings().pilot_grant_credits  # 默认 0：不自动发放，由平台管理员手动充值
+    if pilot > 0 and not db.scalar(select(func.count()).select_from(CreditEntry).where(CreditEntry.entry_type == "grant")):
+        db.add(CreditEntry(entry_type="grant", credits=pilot, quantity=pilot, note="试点赠送点数"))
         db.flush()
     return round(float(db.scalar(select(func.coalesce(func.sum(CreditEntry.credits), 0))) or 0), 2)
 
@@ -45,3 +44,13 @@ def consume(db: Session, action: str, qty: float, *, task_id=None, held=False, o
                        actor_id=actor_id, price_version=PRICE_VERSION, note=f"{amount} 点" if held else None))
     db.flush()
     return amount
+
+
+def grant(db: Session, amount: float, *, note: str, entry_type: str = "grant", operator: str | None = None) -> CreditEntry:
+    """平台管理员充值 / 更正（entry_type = grant 或 correction，可为负数更正）。只追加。"""
+    if entry_type not in ("grant", "correction") or amount == 0 or (entry_type == "grant" and amount < 0):
+        raise AppError("COMMON_VALIDATION", details={"amount": "充值须为正数；更正可为负"})
+    e = CreditEntry(entry_type=entry_type, credits=amount, quantity=amount, note=(f"[{operator}] " if operator else "") + note[:200])
+    db.add(e)
+    db.flush()
+    return e

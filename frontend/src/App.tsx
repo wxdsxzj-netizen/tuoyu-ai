@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { Layout, Menu, Dropdown, Spin, Space, Select, Typography } from 'antd'
-import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined, BookOutlined, AimOutlined, BankOutlined, ContactsOutlined, ImportOutlined, SafetyCertificateOutlined, MailOutlined, SendOutlined, CheckSquareOutlined, FileProtectOutlined, InboxOutlined, MessageOutlined, GiftOutlined, ShopOutlined, FireOutlined, RobotOutlined, BarChartOutlined, FileSearchOutlined } from '@ant-design/icons'
+import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined, BookOutlined, AimOutlined, BankOutlined, ContactsOutlined, ImportOutlined, SafetyCertificateOutlined, MailOutlined, SendOutlined, CheckSquareOutlined, FileProtectOutlined, InboxOutlined, MessageOutlined, GiftOutlined, ShopOutlined, FireOutlined, RobotOutlined, BarChartOutlined, FileSearchOutlined, WalletOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from './auth'
 import i18n, { LOCALE_KEY } from './i18n'
@@ -30,6 +30,7 @@ import InquiriesPage from './pages/Inquiries'
 import AgentPage from './pages/Agent'
 import AnalyticsPage from './pages/Analytics'
 import ResearchPage from './pages/Research'
+import BillingPage from './pages/Billing'
 
 function Shell() {
   const { me, can, logout } = useAuth()
@@ -58,6 +59,7 @@ function Shell() {
     can('dsr.manage') && { key: '/dsr', icon: <FileProtectOutlined />, label: t('menu.dsr') },
     can('user.read') && { key: '/users', icon: <TeamOutlined />, label: t('menu.users') },
     can('tenant.read') && { key: '/tenant', icon: <SettingOutlined />, label: t('menu.tenant') },
+    can('billing.read') && { key: '/billing', icon: <WalletOutlined />, label: t('menu.billing') },
     can('audit.read') && { key: '/audit', icon: <AuditOutlined />, label: t('menu.audit') },
     can('job.run') && { key: '/jobs', icon: <ThunderboltOutlined />, label: t('menu.jobs') },
   ].filter(Boolean) as { key: string; icon: JSX.Element; label: string }[]
@@ -86,6 +88,7 @@ function Shell() {
             <Route path="/agent" element={<AgentPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route path="/research" element={<ResearchPage />} />
+            <Route path="/billing" element={<BillingPage />} />
             <Route path="/handoffs" element={<HandoffsPage />} />
             <Route path="/crm" element={<CrmPage />} />
             <Route path="/kb" element={<KbPage />} />

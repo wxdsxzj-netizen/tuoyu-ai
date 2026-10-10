@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useCallback, useEffect, useState } from 'react'
-import { Alert, Button, Card, Col, Descriptions, Drawer, Input, InputNumber, Row, Select, Space, Statistic, Table, Tabs, Tag, Timeline, Typography, message } from 'antd'
+import { Alert, Button, Card, Col, Descriptions, Drawer, Input, InputNumber, Row, Select, Space, Table, Tabs, Tag, Timeline, Typography, message } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
 import { useAuth } from '../auth'
@@ -58,20 +58,8 @@ function TaskCard({ task, onChange }: { task: any; onChange: (t: any) => void })
   </Card>
 }
 
-function Ledger() {
-  const { t } = useTranslation()
-  const [d, setD] = useState<any>()
-  useEffect(() => { api.get('/credits').then(r => setD(r.data)) }, [])
-  return <>{d && <><Statistic title={t('p5.balance')} value={d.balance} />
-    <Table rowKey="id" size="small" dataSource={d.items} columns={[
-      { title: '时间', dataIndex: 'at', render: v => new Date(v).toLocaleString() }, { title: '类型', dataIndex: 'entry_type' },
-      { title: '动作', dataIndex: 'action' }, { title: '数量', dataIndex: 'quantity' }, { title: '单价', dataIndex: 'unit_price' },
-      { title: '余额影响', dataIndex: 'credits' }, { title: '结果', dataIndex: 'result' }, { title: '备注', dataIndex: 'note' }]} /></>}</>
-}
-
 export default function AgentPage() {
   const { t } = useTranslation()
-  const { can } = useAuth()
   const [text, setText] = useState('')
   const [autonomy, setAutonomy] = useState('L1')
   const [budget, setBudget] = useState<number | null>(null)
@@ -102,5 +90,5 @@ export default function AgentPage() {
       </Card>
     </Col>
     <Drawer width={820} open={!!view} onClose={() => setView(undefined)}>{view && <TaskCard task={view} onChange={x => { setView(x); load() }} />}</Drawer>
-  </Row> }, ...(can('billing.read') ? [{ key: 'l', label: t('p5.ledger'), children: <Ledger /> }] : [])]} />
+  </Row> }]} />
 }

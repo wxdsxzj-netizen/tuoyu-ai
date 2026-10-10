@@ -26,7 +26,8 @@
     "inquiries": "询盘",
     "agent": "一句话任务",
     "analytics": "经营看板",
-    "research": "AI 背调"
+    "research": "AI 背调",
+    "billing": "计费与点数"
   },
   "login": {
     "title": "登录拓域 AI",
@@ -892,6 +893,24 @@
     "quoteTh": "报价审批阈值",
     "mm": "经理审批：毛利率低于（%）",
     "mo": "所有者审批：毛利率低于（%）",
-    "dm": "经理审批：折扣高于（%）"
+    "dm": "经理审批：折扣高于（%）",
+    "billing": "计费",
+    "summary": "概览",
+    "heldNow": "运行中任务预占",
+    "granted": "累计充值",
+    "usedMonth": "本月消耗",
+    "byAction": "本月按动作消耗",
+    "unpaid": "待付款发票",
+    "invoices": "发票",
+    "prices": "价目表",
+    "exportCsv": "导出 CSV",
+    "invNo": "发票号",
+    "period": "期间",
+    "amount": "金额",
+    "creditsCol": "点数",
+    "paidAt": "付款时间",
+    "method": "付款方式",
+    "lowBalance": "点数余额偏低，请联系平台管理员充值",
+    "topupHint": "点数由平台管理员手动充值（对公转账后登记发票并标记已付款），不支持在线支付。"
   }
 }

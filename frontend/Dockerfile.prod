@@ -1,0 +1,11 @@
+# 生产：构建静态文件，由 Caddy 提供 HTTPS、静态资源与反向代理
+FROM node:20-alpine AS build
+WORKDIR /web
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM caddy:2.8-alpine
+COPY --from=build /web/dist /srv
+COPY deploy/Caddyfile /etc/caddy/Caddyfile

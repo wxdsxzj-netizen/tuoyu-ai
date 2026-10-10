@@ -1,0 +1,52 @@
+# 由环境变量 APP_DOMAIN、ACME_EMAIL 注入。Caddy 自动申请 / 续期 Let's Encrypt 证书（需 80/443 对公网开放、DNS 已指向本机）
+{
+	email {$ACME_EMAIL}
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# /metrics 不对公网开放（Prometheus 在内网直接抓 backend:8000/metrics）
+	@metrics path /metrics
+	respond @metrics 404
+
+	# 后端：API、退订（/u/）、公开数据主体请求（/privacy/）、报价确认接口（/public/）、健康检查
+	@backend path /api/* /u/* /privacy/* /public/* /healthz /livez /readyz
+	handle @backend {
+		reverse_proxy backend:8000 {
+			header_up X-Real-IP {remote_host}
+			health_uri /livez
+			health_interval 15s
+		}
+	}
+
+	request_body /api/v1/imports* {
+		max_size 25MB
+	}
+
+	# 前端单页应用（含海外客户报价确认页 /confirm/<token>）
+	handle {
+		root * /srv
+		@static path /assets/*
+		header @static Cache-Control "public, max-age=31536000, immutable"
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
