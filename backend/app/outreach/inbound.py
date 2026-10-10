@@ -184,12 +184,18 @@ def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_r
     conv, msg = ingest_inbound(db, peer=sender, subject=subject, body=body or "", header_message_id=header_message_id, refs=ids,
                                category=cat, confidence=conf, contact=contact, mailbox_id=mb.id if mb else None,
                                enrollment_id=e.id if e else None, owner_id=seq.owner_id if seq else None)
-    hid = None
+    hid = iid = None
     if cat in handoff_mod.HANDOFF_CATEGORIES:
-        h = handoff_mod.create(db, conv, e, contact, cat, now=now)
-        hid = str(h.id) if h else None
+        from app.crm import inquiry as inquiry_mod
+        inq = inquiry_mod.on_inbound(db, conv, msg, contact, now=now) if not e else None  # 非序列来信 = 询盘：评分 + 分配 + SLA
+        iid = str(inq.id) if inq else None
+        if not inq or inq.status != "pending_review":  # D 级待复核前不生成交付包
+            h = handoff_mod.create(db, conv, e, contact, cat, now=now)
+            hid = str(h.id)
+            if inq:
+                inq.handoff_id = h.id
     return {"category": cat, "confidence": conf, "needs_human": conf < 0.8, "action": action, "enrollment_id": str(e.id) if e else None,
-            "conversation_id": str(conv.id), "message_id": str(msg.id), "handoff_id": hid}
+            "conversation_id": str(conv.id), "message_id": str(msg.id), "handoff_id": hid, "inquiry_id": iid}
 
 
 def _text_of(msg) -> str:

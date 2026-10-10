@@ -130,17 +130,26 @@ def compute(q: Quote) -> None:
     q.gross_margin_pct = round((q.total_minor - q.cost_minor) / q.total_minor * 100, 1) if q.total_minor > 0 else None
 
 
-def approval_need(q: Quote) -> tuple[str | None, list[str]]:
+def thresholds(db: Session) -> dict:
+    """毛利审批阈值：租户可配置，未配置时用 PRD 默认（BR-10-06）。"""
+    tc = db.scalar(select(TenantCompliance).limit(1))
+    return {"margin_manager": tc.quote_margin_manager if tc else MARGIN_MGR, "margin_owner": tc.quote_margin_owner if tc else MARGIN_OWNER,
+            "discount_manager": tc.quote_discount_manager if tc else DISCOUNT_MGR}
+
+
+def approval_need(q: Quote, th: dict | None = None) -> tuple[str | None, list[str]]:
+    th = th or {"margin_manager": MARGIN_MGR, "margin_owner": MARGIN_OWNER, "discount_manager": DISCOUNT_MGR}
+    mo, mm, dm = th["margin_owner"], th["margin_manager"], th["discount_manager"]
     reasons, level = [], None
     m = q.gross_margin_pct
-    if m is not None and m < MARGIN_OWNER:
-        reasons.append(f"毛利率 {m}% < {MARGIN_OWNER}%")
+    if m is not None and m < mo:
+        reasons.append(f"毛利率 {m}% < {mo}%")
         level = "owner"
-    elif m is not None and m < MARGIN_MGR:
-        reasons.append(f"毛利率 {m}% < {MARGIN_MGR}%")
+    elif m is not None and m < mm:
+        reasons.append(f"毛利率 {m}% < {mm}%")
         level = "manager"
-    if (q.discount_pct or 0) > DISCOUNT_MGR:
-        reasons.append(f"折扣 {q.discount_pct}% > {DISCOUNT_MGR}%")
+    if (q.discount_pct or 0) > dm:
+        reasons.append(f"折扣 {q.discount_pct}% > {dm}%")
         level = level or "manager"
     return level, reasons
 
@@ -170,7 +179,7 @@ def submit(db: Session, q: Quote, user) -> Quote:
     compute(q)
     if not q.items:
         raise AppError("COMMON_VALIDATION", details={"items": "至少一行"})
-    level, reasons = approval_need(q)
+    level, reasons = approval_need(q, thresholds(db))
     q.submitted_by = user.id
     if level:
         q.status, q.approval_level, q.approval_reasons = "pending_approval", level, reasons

@@ -36,6 +36,12 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "crm.manage": ("编辑客户、商机、报价", "Manage CRM"),
     "crm.all": ("查看全部成员的客户与会话", "See all members' records"),
     "quote.approve": ("审批报价（毛利/折扣）", "Approve quotes"),
+    "inquiry.manage": ("配置分配规则、复核询盘", "Manage inquiry rules/review"),
+    "agent.run": ("下达 Agent 任务", "Run agent tasks"),
+    "agent.approve": ("审批 Agent 计划节点", "Approve agent gates"),
+    "research.run": ("AI 背调", "Run AI research"),
+    "analytics.read": ("查看经营看板", "View dashboards"),
+    "billing.read": ("查看点数账本", "View credit ledger"),
 }
 
 SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {
@@ -45,5 +51,6 @@ SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {
                          "kb.read", "icp.read", "company.read", "company.manage", "contact.enrich", "import.run",
                          "contact.verify", "compliance.read", "suppression.add",
                          "mailbox.read", "sequence.read", "sequence.manage",
-                         "inbox.read", "inbox.reply", "handoff.accept", "crm.read", "crm.manage"}),
+                         "inbox.read", "inbox.reply", "handoff.accept", "crm.read", "crm.manage",
+                         "agent.run", "research.run", "analytics.read"}),
 }

@@ -112,6 +112,30 @@ def put_bank(body: BankInfo, request: Request, cu: CurrentUser = Depends(require
     return {"ok": True}
 
 
+class QuoteThresholds(BaseModel):
+    margin_manager: float = Field(15.0, ge=0, le=100)
+    margin_owner: float = Field(8.0, ge=0, le=100)
+    discount_manager: float = Field(10.0, ge=0, le=100)
+
+
+@router.get("/crm/settings/quote", tags=["crm"])
+def get_quote_thresholds(cu: CurrentUser = Depends(require("crm.read")), db: Session = Depends(get_db)):
+    return crm.thresholds(db)
+
+
+@router.put("/crm/settings/quote", tags=["crm"])
+def put_quote_thresholds(body: QuoteThresholds, request: Request, cu: CurrentUser = Depends(require("billing.manage")),
+                         db: Session = Depends(get_db)):
+    """报价审批阈值（仅所有者）：老板审批线必须低于经理审批线。"""
+    if body.margin_owner > body.margin_manager:
+        raise AppError("COMMON_VALIDATION", details={"margin_owner": "须 ≤ 经理审批毛利线"})
+    tc = _tc(db, cu)
+    tc.quote_margin_manager, tc.quote_margin_owner, tc.quote_discount_manager = body.margin_manager, body.margin_owner, body.discount_manager  # noqa: E501
+    audit(db, cu, request, "crm.quote_thresholds.update", **body.model_dump())
+    db.commit()
+    return body
+
+
 # ======================= 通知中心 =======================
 class NotifOut(ORM):
     id: uuid.UUID

@@ -84,6 +84,12 @@ ERROR_CODES: dict[str, tuple[int, str, str, bool]] = {
     "CRM_LOST_REASON_REQUIRED": (400, "请选择输单原因", "Lost reason required", False),
     "CRM_PRIVATE_POOL_FULL": (409, "私海客户已达上限", "Private pool full", False),
     "CRM_SANCTION_BLOCKED": (409, "交易方筛查疑似命中，已阻止", "Blocked by sanctions screening", False),
+    "BILLING_INSUFFICIENT": (402, "点数余额不足", "Insufficient credits", False),
+    "AGENT_BUDGET_EXCEEDED": (409, "预估点数超过任务预算", "Estimate exceeds task budget", False),
+    "AGENT_TOOL_FORBIDDEN": (403, "Agent 无权调用该工具", "Tool not allowed for agent", False),
+    "AGENT_ROLLBACK_PARTIAL": (200, "部分动作不可回滚", "Partial rollback", False),
+    "INQUIRY_RULE_LIMIT": (409, "分配规则最多 50 条", "At most 50 rules", False),
+    "RESEARCH_TARGET_UNRESOLVED": (422, "无法识别要背调的公司", "Cannot resolve company", False),
     "LLM_UNAVAILABLE": (503, "AI 服务暂不可用", "AI service unavailable", True),
 }
 

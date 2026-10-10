@@ -298,6 +298,8 @@ def send_reply(db: Session, c: Conversation, *, body: str, user, subject: str | 
                                kind="reply", status="sent", sent_at=now, snapshot={"user_id": str(user.id), "conversation_id": str(c.id)}))
         health.today_metric(db, mb).sent_reply += 1
         c.status, c.last_message_at, c.mode = "replied", now, "human"
+        from app.crm.inquiry import on_first_response
+        on_first_response(db, c, now)
         if c.account_id:
             a = db.get(Account, c.account_id)
             if a:

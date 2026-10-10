@@ -306,3 +306,16 @@ def crm_daily_task():
     """每日：商机卡点预警（N-10）。"""
     from app.crm.service import stuck_tick
     return _each_tenant(lambda db, tid: {"stuck_notified": stuck_tick(db)}, "crm")
+
+
+@celery_app.task(name="inquiry.sla")
+def inquiry_sla_task():
+    """每 5 分钟：询盘首次响应 SLA（工作时间）50% / 100% 提醒，150% 改派，2 次后进共享池（BR-8-03）。"""
+    from app.crm.inquiry import sla_tick
+
+    def fn(db, tid):
+        r = sla_tick(db)
+        if any(r.values()):
+            write_audit(db, tenant_id=tid, action="inquiry.sla_tick", actor_type="system", after=r)
+        return r
+    return _each_tenant(fn, "inquiry")

@@ -326,6 +326,10 @@ class TenantCompliance(TenantScoped, Base):
     footer_language: Mapped[str] = mapped_column(String(8), default="en")
     l2_auto_approve: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_false())  # 试点默认关闭
     bank_info: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 收款银行（PI 用）
+    quote_margin_manager: Mapped[float] = mapped_column(Float, default=15.0, server_default="15")  # BR-10-06 默认值，可按租户配置
+    quote_margin_owner: Mapped[float] = mapped_column(Float, default=8.0, server_default="8")
+    quote_discount_manager: Mapped[float] = mapped_column(Float, default=10.0, server_default="10")
+    business_tz: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", server_default="Asia/Shanghai")  # SLA 工作时间时区
 
 
 class RegionRule(Base):
@@ -812,3 +816,131 @@ class ProformaInvoice(TenantScoped, Base):
     total_minor: Mapped[int] = mapped_column(BigInteger, default=0)
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     status: Mapped[str] = mapped_column(String(10), default="issued")  # issued / void
+
+
+# ======================= P5：询盘 / Agent / 点数 / 背调 =======================
+class Inquiry(TenantScoped, Base):
+    """询盘（SM-11）。"""
+    __tablename__ = "inquiries"
+    conversation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    account_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    peer_email: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
+    source_channel: Mapped[str] = mapped_column(String(16), default="email")
+    status: Mapped[str] = mapped_column(String(16), default="new", index=True)
+    authenticity_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    clarity_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fit_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    grade: Mapped[str | None] = mapped_column(String(1), nullable=True, index=True)
+    score_detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    risk_flags: Mapped[list | None] = mapped_column(JSONB, default=list)
+    needs: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    language: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    assignee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    assigned_by: Mapped[str | None] = mapped_column(String(8), nullable=True)  # owner / rule / manual / pool
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rule_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    sla_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sla_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sla_alerts: Mapped[list | None] = mapped_column(JSONB, default=list)
+    reassign_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_response_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    merged_into: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    message_count: Mapped[int] = mapped_column(Integer, default=1)
+    handoff_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class AssignmentRule(TenantScoped, Base):
+    __tablename__ = "assignment_rules"
+    name: Mapped[str] = mapped_column(String(64))
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    countries: Mapped[list[str]] = mapped_column(ARRAY(String(2)), default=list)
+    languages: Mapped[list[str]] = mapped_column(ARRAY(String(8)), default=list)
+    grades: Mapped[list[str]] = mapped_column(ARRAY(String(1)), default=list)
+    keywords: Mapped[list[str]] = mapped_column(ARRAY(String(64)), default=list)  # 产品线关键词
+    member_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    daily_cap: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class CreditEntry(TenantOwned, Base):
+    """点数账本（只追加）：grant / hold / consume / release / refund。"""
+    __tablename__ = "credit_entries"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    entry_type: Mapped[str] = mapped_column(String(10))
+    action: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    quantity: Mapped[float] = mapped_column(Float, default=0)
+    unit_price: Mapped[float] = mapped_column(Float, default=0)
+    credits: Mapped[float] = mapped_column(Float)  # 对可用余额的影响（grant +，hold −，release +，consume 对 held 计）
+    task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    object_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    object_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result: Mapped[str | None] = mapped_column(String(12), nullable=True)  # success / failed / cached
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    price_version: Mapped[str] = mapped_column(String(16), default="2026.1")
+    note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class AgentTask(TenantScoped, Base):
+    """一句话任务（SM-03）。"""
+    __tablename__ = "agent_tasks"
+    input_text: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str] = mapped_column(String(10), default="task")  # task / help
+    intent: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    questions: Mapped[list | None] = mapped_column(JSONB, default=list)
+    clarify_rounds: Mapped[int] = mapped_column(Integer, default=0)
+    plan: Mapped[list | None] = mapped_column(JSONB, default=list)
+    estimate: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    budget: Mapped[float | None] = mapped_column(Float, nullable=True)
+    autonomy: Mapped[str] = mapped_column(String(2), default="L1")
+    effective_autonomy: Mapped[str] = mapped_column(String(2), default="L1")
+    limited_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+    current_step: Mapped[int] = mapped_column(Integer, default=0)
+    pending_approval: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    credits_held: Mapped[float] = mapped_column(Float, default=0)
+    credits_used: Mapped[float] = mapped_column(Float, default=0)
+    context: Mapped[dict | None] = mapped_column(JSONB, default=dict)  # 步骤间传递的对象 ID
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pause_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentStepLog(TenantOwned, Base):
+    __tablename__ = "agent_step_logs"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_tasks.id", ondelete="CASCADE"), index=True)
+    step_no: Mapped[int] = mapped_column(Integer)
+    agent: Mapped[str] = mapped_column(String(16))
+    tool: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(12))  # ok / failed / skipped / approved / rejected / rolled_back
+    input: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    output: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    credits: Mapped[float] = mapped_column(Float, default=0)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ResearchReport(TenantScoped, Base):
+    """AI 背调报告（M4-01/02/03/04）。"""
+    __tablename__ = "research_reports"
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(14), default="ok")  # ok / insufficient
+    sections: Mapped[list] = mapped_column(JSONB, default=list)
+    evidence: Mapped[list] = mapped_column(JSONB, default=list)
+    risks: Mapped[list] = mapped_column(JSONB, default=list)
+    fit_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    credits_charged: Mapped[float] = mapped_column(Float, default=0)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    robots_skipped: Mapped[list | None] = mapped_column(JSONB, default=list)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)

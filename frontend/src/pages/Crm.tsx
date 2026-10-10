@@ -250,8 +250,23 @@ function Pis() {
         {can('billing.manage') && <Button type="primary" htmlType="submit">{t('p4.save')}</Button>}
         {!can('billing.manage') && <Typography.Text type="secondary">{t('p4.bankOwnerOnly')}</Typography.Text>}
       </Form>}
-    </Card></Col>
+    </Card>
+    <QuoteThresholds /></Col>
   </Row>
+}
+
+function QuoteThresholds() {
+  const { t } = useTranslation()
+  const { can } = useAuth()
+  const [v, setV] = useState<any>()
+  useEffect(() => { api.get('/crm/settings/quote').then(r => setV(r.data)) }, [])
+  return <Card size="small" title={t('p5.quoteTh')} style={{ marginTop: 12 }}>{v && <Form layout="vertical" initialValues={v} disabled={!can('billing.manage')}
+    onFinish={async (x) => { await api.put('/crm/settings/quote', x); message.success(t('p4.done')) }}>
+    <Form.Item name="margin_manager" label={t('p5.mm')}><InputNumber min={0} max={100} /></Form.Item>
+    <Form.Item name="margin_owner" label={t('p5.mo')}><InputNumber min={0} max={100} /></Form.Item>
+    <Form.Item name="discount_manager" label={t('p5.dm')}><InputNumber min={0} max={100} /></Form.Item>
+    {can('billing.manage') && <Button type="primary" htmlType="submit">{t('p4.save')}</Button>}
+  </Form>}</Card>
 }
 
 export default function CrmPage() {

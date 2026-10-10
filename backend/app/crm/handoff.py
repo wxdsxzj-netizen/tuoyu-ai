@@ -136,6 +136,9 @@ def accept(db: Session, h: Handoff, user) -> Opportunity:
     db.flush()
     h.status, h.decided_by, h.decided_at, h.opportunity_id, h.account_id, h.assignee_id = "accepted", user.id, utcnow(), opp.id, acc.id, user.id  # noqa: E501
     conv.account_id, conv.assignee_id = acc.id, user.id
+    from app.models import Inquiry
+    for inq in db.scalars(select(Inquiry).where(Inquiry.handoff_id == h.id)):
+        inq.status, inq.opportunity_id, inq.account_id = "converted", opp.id, acc.id
     if contact and not contact.account_id:
         contact.account_id = acc.id
     db.flush()

@@ -16,7 +16,16 @@ INQ = ("We are interested in your ball valves, model no. BV-200. We need 5000 pc
        "in Germany, delivery within 6 weeks. Und wir bitten um ein Angebot, bitte.")
 
 
-def _log(client, h, frm, subject, body, in_reply_to=None):
+_KNOWN = set()
+
+
+def _log(client, h, frm, subject, body, in_reply_to=None, known=True):
+    """known=True：先在数据中枢登记发件人公司（询盘真实性“公司可验证 / 域名一致”），避免被评为 D 级待复核。"""
+    dom = frm.split("@")[-1].strip(">").lower()
+    key = (h["Authorization"], dom)
+    if known and key not in _KNOWN:
+        client.post(f"{P}/companies", headers=h, json={"name": dom, "domain": dom, "country": "DE"}, params={"force": True})
+        _KNOWN.add(key)
     r = client.post(f"{P}/inbox/log", headers=h, json={"from_addr": frm, "subject": subject, "body": body, "in_reply_to": in_reply_to})
     assert r.status_code == 200, r.text
     return r.json()
@@ -89,8 +98,12 @@ def test_handoff_accept_reject_metric_and_isolation(client):
     s2, sh2 = add_user(client, h, "s2@a.com", "sales")
     a = _log(client, h, "hans@buyer-gmbh.de", "Inquiry", INQ)
     b = _log(client, h, "li@other-co.com", "Samples", "Interested, can we get samples?")
-    # 未分配（无序列归属）的交付包在共享池，业务员都可见
-    assert client.get(f"{P}/handoffs", headers=sh1).json()["total"] == 2
+    # P5：非序列询盘按轮转分配（负载最小、并列轮转）→ 两名业务员各得一个
+    ha = client.get(f"{P}/handoffs/{a['handoff_id']}", headers=h).json()["handoff"]
+    if ha["assignee_id"] != s1["id"]:
+        sh1, sh2 = sh2, sh1
+    assert client.get(f"{P}/handoffs", headers=sh1).json()["total"] == 1
+    assert client.get(f"{P}/handoffs", headers=sh2).json()["total"] == 1
     acc = client.post(f"{P}/handoffs/{a['handoff_id']}:accept", headers=sh1)
     assert acc.status_code == 200 and acc.json()["is_qualified"] is True  # ≥2 项需求明确（BR-7-11）
     again = client.post(f"{P}/handoffs/{a['handoff_id']}:accept", headers=sh2)
