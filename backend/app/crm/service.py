@@ -78,6 +78,12 @@ def change_stage(db: Session, opp: Opportunity, stage: str, lost_reason: str | N
         acc.grade = "A" if opp.amount_minor >= 5_000_000 else "B"
         from app.b5.agentx import fire
         fire(db, "deal.won", {"company": acc.name, "domain": acc.domain, "country": acc.country})
+        try:
+            from app.b8.platform import charge_qualified_lead, emit_webhook
+            charge_qualified_lead(db, opp)
+            emit_webhook(db, "deal.won", {"opportunity_id": str(opp.id)})
+        except Exception:  # noqa: BLE001
+            pass
         from app.crm.b2 import repurchase_task
         repurchase_task(db, opp)  # M10-34
         ids = [c.id for c in db.scalars(select(Contact).where(Contact.account_id == acc.id))]

@@ -245,7 +245,8 @@ def test_mailbox_binding_security_and_breaker(client):
         _bind(client, h, sink.port, addr="b@nbvalve.com")
         _bind(client, h, sink.port, addr="c@nbvalve.com")
         assert _bind(client, h, sink.port, addr="d@nbvalve.com").json()["error"]["code"] == "DELIVERY_DOMAIN_MAILBOX_LIMIT"
-    assert client.post(f"{P}/mailboxes/oauth/google:start", headers=h).status_code == 503
+    r = client.post(f"{P}/mailboxes/oauth/google:start", headers=h)
+    assert r.status_code == 200 and r.json().get("stub") is True
     _, sh = add_user(client, h, "s@a.com", "sales")
     assert client.get(f"{P}/mailboxes", headers=sh).status_code == 200
     assert _bind(client, sh, 25, addr="e@nbvalve.com").status_code == 403

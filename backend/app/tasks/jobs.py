@@ -447,3 +447,34 @@ def b6_daily_task():
     finally:
         db.close()
     return {"signals": sig, "contact_changes": changes, "reports": reports_tick.tick_all()}
+
+
+@celery_app.task(name="b7.daily")
+def b7_daily_task():
+    """预热互发模拟 + 学院种子。"""
+    from app.b7 import delivery
+    from app.b8 import platform as plat
+    from app.core.db import SessionLocal, bypass_tenant, tenant_context
+    from app.models import Mailbox, Tenant
+    from sqlalchemy import select
+
+    db = SessionLocal()
+    out = {"warmup": {}}
+    try:
+        delivery.seed_inboxes(db)
+        delivery.ensure_warmup_peers(db)
+        plat.seed_academy(db)
+        db.commit()
+        with bypass_tenant():
+            tids = [t.id for t in db.scalars(select(Tenant).where(Tenant.status == "active"))]
+        for tid in tids:
+            with tenant_context(tid):
+                db.info["tenant_id"] = tid
+                n = 0
+                for mb in db.scalars(select(Mailbox).where(Mailbox.deleted_at.is_(None), Mailbox.status.in_(("warming", "active")))):
+                    n += delivery.warmup_tick(db, mb).get("exchanges", 0)
+                out["warmup"][str(tid)] = n
+                db.commit()
+    finally:
+        db.close()
+    return out

@@ -21,6 +21,7 @@ from app.models import (
     Quote,
     SendingDomain,
     Sequence,
+    SeedTest,
 )
 
 
@@ -124,4 +125,4 @@ def deliverability(db: Session, days: int = 30, owner_id=None) -> dict:
     tot = sum(p["sent"] for p in per)
     return {"mailboxes": per, "series": series, "domains": doms, "breaker_events": evs, "totals": {
         "sent": tot, "bounce_rate": rate(sum(x.hard_bounces for x in mets), tot), "complaint_rate": rate(sum(x.complaints for x in mets), tot),  # noqa: E501
-        "reply_rate": rate(sum(x.replies for x in mets), tot)}, "inbox_placement": None}
+        "reply_rate": rate(sum(x.replies for x in mets), tot)}, "inbox_placement": (lambda st: {"rate": st.inbox_rate, "tested_at": st.finished_at.isoformat() if st and st.finished_at else None, "source": "seed_mock"} if st else None)(db.scalar(select(SeedTest).where(SeedTest.status == "done").order_by(SeedTest.finished_at.desc()).limit(1)))}

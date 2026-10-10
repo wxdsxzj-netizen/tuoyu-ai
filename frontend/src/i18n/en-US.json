@@ -42,7 +42,8 @@
     "billingPlus": "Plans & budgets",
     "support": "Help & support",
     "aiLab": "AI Lab",
-    "dataHub": "Data hub"
+    "dataHub": "Data hub",
+    "platform": "Platform & sites"
   },
   "login": {
     "title": "Sign in to Tuoyu AI",
@@ -1872,5 +1873,46 @@
   "compliance": {
     "aiDisclose": "AI disclosure on outbound email (default off)",
     "aiDiscloseEu": "EU/EEA/UK recipient override (default on)"
+  },
+  "b78": {
+    "siteNote": "Sites publish under /s/{slug}/ without a real domain; sitemap/robots and basic SEO included.",
+    "title": "Title",
+    "create": "Create",
+    "status": "Status",
+    "genProducts": "Generate from products",
+    "publish": "Publish",
+    "open": "Open",
+    "oauthGoogle": "Google OAuth info",
+    "oauthMs": "Microsoft OAuth info",
+    "oauthStub": "Create OAuth stub mailbox",
+    "runSeed": "Run seed test",
+    "warmup": "Warm-up round",
+    "delivNote": "Seed tests and warm-up peers are simulated locally. Real OAuth needs vendor verification and Client IDs.",
+    "subject": "Subject",
+    "inboxRate": "Inbox rate",
+    "newKey": "New API key",
+    "newWh": "New webhook",
+    "testWh": "Test deliver",
+    "name": "Name",
+    "revoke": "Revoke",
+    "academy": "Academy",
+    "roadmap": "Roadmap",
+    "subprocessors": "Subprocessors",
+    "purpose": "Purpose",
+    "location": "Location",
+    "feedback": "Feedback",
+    "submit": "Submit",
+    "addErp": "Add CSV connection",
+    "kind": "Kind",
+    "export": "Export",
+    "importCsv": "Import",
+    "provider": "Provider",
+    "tryIm": "Mock inbound",
+    "tabSite": "Site / SEO",
+    "tabDeliv": "Deliverability & OAuth",
+    "tabDev": "Open platform",
+    "tabErp": "ERP",
+    "tabIm": "IM assistants",
+    "tabSuccess": "Academy & feedback"
   }
 }

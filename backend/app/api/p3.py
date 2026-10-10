@@ -365,10 +365,11 @@ def bind_mailbox(body: MailboxIn, request: Request, cu: CurrentUser = Depends(re
     return {"mailbox": mb_out(db, mb), "smtp_test": test, "domain": DomainOut.model_validate(d)}
 
 
-@router.post("/mailboxes/oauth/{provider}:start", tags=["mailboxes"])
-def oauth_start(provider: str, cu: CurrentUser = Depends(require("mailbox.manage"))):
-    """Google / Microsoft OAuth：需完成 Google 受限范围验证（CASA）与 Microsoft 发布者验证后开放（BR-6-50/51）。"""
-    raise AppError("DELIVERY_PROVIDER_UNAVAILABLE", details={"provider": provider, "reason": "OAuth 接入待平台完成服务商验证，请先使用 IMAP / SMTP"})  # noqa: E501
+@router.post("/mailboxes/oauth/{provider}:start", tags=["mailboxes"], deprecated=True)
+def oauth_start_legacy(provider: str, cu: CurrentUser = Depends(require("mailbox.manage")), db: Session = Depends(get_db)):
+    """请改用 GET /mailboxes/oauth/{provider}:start。"""
+    from app.b7 import delivery
+    return delivery.oauth_start(db, provider, cu.id)
 
 
 @router.patch("/mailboxes/{mid}", tags=["mailboxes"])
@@ -463,7 +464,7 @@ def poll(mid: uuid.UUID, cu: CurrentUser = Depends(require("mailbox.manage")), d
 class StepIn(BaseModel):
     step_no: int = Field(ge=1, le=15)
     wait_days: int = Field(0, ge=0, le=60)
-    mode: str = Field("ai", pattern="^(ai|template|linkedin|whatsapp)$")
+    mode: str = Field("ai", pattern="^(ai|template|linkedin|whatsapp|phone)$")
     subject_tpl: str | None = Field(None, max_length=256)
     body_tpl: str | None = Field(None, max_length=10000)
     instructions: str | None = Field(None, max_length=2000)

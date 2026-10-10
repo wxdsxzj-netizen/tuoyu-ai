@@ -236,6 +236,22 @@ def process_enrollment(db: Session, e: Enrollment, now: datetime, rng: random.Ra
         e.current_step = nxt.step_no if nxt else step.step_no + 1
         e.next_run_at = now
         return "whatsapp_desk"
+    if step.mode == "phone":
+        from app.b7 import social as soc
+        phone = contact.phone or ""
+        if not phone:
+            event(db, e, "skipped", "NO_PHONE", step_no=step.step_no)
+            nxt = next((x for x in steps if x.step_no > step.step_no), None)
+            e.current_step = nxt.step_no if nxt else step.step_no + 1
+            e.next_run_at = now
+            return "phone_skip"
+        soc.create_phone_task(db, assignee_id=seq.owner_id, phone=phone, script=step.instructions or step.body_tpl,
+                              contact_id=contact.id, sequence_id=seq.id, enrollment_id=e.id)
+        event(db, e, "phone_task", "CREATED", step_no=step.step_no)
+        nxt = next((x for x in steps if x.step_no > step.step_no), None)
+        e.current_step = nxt.step_no if nxt else step.step_no + 1
+        e.next_run_at = now + timedelta(days=step.wait_days or 1)
+        return "phone_task"
     try:
         draft = ensure_draft(db, e, seq, step)
     except AppError as ex:

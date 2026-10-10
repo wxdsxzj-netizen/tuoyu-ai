@@ -195,6 +195,7 @@ class Company(TenantScoped, Base):
     sanction_screened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     field_meta: Mapped[dict] = mapped_column(JSONB, default=dict)  # B6 逐字段血缘 {field:{source,confidence,fetched_at,expires_at}}
     global_gid: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # 关联公共库
+    tech_stack: Mapped[dict] = mapped_column(JSONB, default=dict)  # B7 网站技术指纹
 
 
 class Contact(TenantScoped, Base):
@@ -514,6 +515,9 @@ class Mailbox(TenantScoped, Base):
     last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_send_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     signature: Mapped[str | None] = mapped_column(Text, nullable=True)
+    oauth_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)  # google / microsoft
+    oauth_status: Mapped[str | None] = mapped_column(String(24), nullable=True)  # pending / connected / expired / stub
+    oauth_meta: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
 class MailboxMetricDaily(TenantOwned, Base):
@@ -1361,6 +1365,8 @@ class Plan(TimestampMixin, Base):
     included_seats: Mapped[int] = mapped_column(Integer, default=1)
     included_credits: Mapped[float] = mapped_column(Float, default=0)
     rollover_pct: Mapped[int] = mapped_column(Integer, default=100)  # 未用赠送点数可结转比例（只结转 1 个月）
+    billing_mode: Mapped[str] = mapped_column(String(16), default="subscription")  # subscription / per_lead / hybrid
+    lead_price_minor: Mapped[int] = mapped_column(Integer, default=0)
     features: Mapped[dict] = mapped_column(JSONB, default=dict)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -1780,3 +1786,237 @@ class AlibabaLead(TenantScoped, Base):
     raw: Mapped[dict] = mapped_column(JSONB, default=dict)
     inquiry_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="imported")  # imported / linked / ignored
+
+
+# ======================= B7/B8：渠道补齐、开放平台、独立站、计费与集成 =======================
+class Site(TenantScoped, Base):
+    """租户独立站（M9）：路径 /s/{slug} 发布，不要求真实域名绑定。"""
+    __tablename__ = "sites"
+    slug: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    lang: Mapped[str] = mapped_column(String(8), default="en")
+    theme: Mapped[dict] = mapped_column(JSONB, default=dict)  # colors, logo_url
+    seo: Mapped[dict] = mapped_column(JSONB, default=dict)  # default title/desc/og
+    status: Mapped[str] = mapped_column(String(12), default="draft")  # draft / published
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SitePage(TenantScoped, Base):
+    __tablename__ = "site_pages"
+    site_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    path: Mapped[str] = mapped_column(String(200))  # /, /products/xxx
+    page_type: Mapped[str] = mapped_column(String(16), default="page")  # home / product / article / custom
+    title: Mapped[str] = mapped_column(String(200))
+    body_md: Mapped[str] = mapped_column(Text, default="")
+    seo_title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    seo_description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    product_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    sort: Mapped[int] = mapped_column(Integer, default=0)
+    noindex: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class SeedInbox(TimestampMixin, Base):
+    """种子收件箱（平台级 mock）：用于进箱率探测。"""
+    __tablename__ = "seed_inboxes"
+    address: Mapped[str] = mapped_column(String(254), unique=True)
+    provider: Mapped[str] = mapped_column(String(32), default="mock")  # gmail / outlook / yahoo / mock
+    region: Mapped[str] = mapped_column(String(8), default="US")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class SeedTest(TenantScoped, Base):
+    __tablename__ = "seed_tests"
+    mailbox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    subject: Mapped[str] = mapped_column(String(256))
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="queued")  # queued / running / done
+    results: Mapped[list] = mapped_column(JSONB, default=list)  # [{address, folder, latency_s}]
+    inbox_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WarmupPeer(TimestampMixin, Base):
+    """预热互发网络节点（平台模拟）。"""
+    __tablename__ = "warmup_peers"
+    address: Mapped[str] = mapped_column(String(254), unique=True)
+    domain: Mapped[str] = mapped_column(String(253), index=True)
+    region: Mapped[str] = mapped_column(String(8), default="US")
+    reputation: Mapped[float] = mapped_column(Float, default=0.8)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class WarmupExchange(TenantScoped, Base):
+    __tablename__ = "warmup_exchanges"
+    mailbox_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    peer_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    direction: Mapped[str] = mapped_column(String(3))  # out / in
+    status: Mapped[str] = mapped_column(String(16), default="simulated")  # simulated / opened / replied
+    day: Mapped[date] = mapped_column(Date, index=True)
+
+
+class PhoneTask(TenantScoped, Base):
+    """电话人工任务（序列 phone 步骤）。"""
+    __tablename__ = "phone_tasks"
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    assignee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    phone: Mapped[str] = mapped_column(String(32))
+    script: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="todo")  # todo / done / no_answer / wrong_number / skipped
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sequence_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class MetaChannel(TenantScoped, Base):
+    """FB/IG 私信通道（mock Cloud API）。"""
+    __tablename__ = "meta_channels"
+    platform: Mapped[str] = mapped_column(String(12))  # facebook / instagram
+    page_id: Mapped[str] = mapped_column(String(64))
+    page_name: Mapped[str] = mapped_column(String(128))
+    access_token: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="mock")
+
+
+class MetaMessage(TenantScoped, Base):
+    __tablename__ = "meta_messages"
+    channel_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    peer_id: Mapped[str] = mapped_column(String(64), index=True)
+    direction: Mapped[str] = mapped_column(String(3))
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="mock_sent")
+    human_task: Mapped[bool] = mapped_column(Boolean, default=False)  # True=仅人工任务，不调用 API
+
+
+class ApiKey(TenantScoped, Base):
+    __tablename__ = "api_keys"
+    name: Mapped[str] = mapped_column(String(100))
+    prefix: Mapped[str] = mapped_column(String(12), index=True)
+    key_hash: Mapped[str] = mapped_column(String(64))
+    scopes: Mapped[list] = mapped_column(JSONB, default=list)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WebhookEndpoint(TenantScoped, Base):
+    __tablename__ = "webhook_endpoints"
+    url: Mapped[str] = mapped_column(String(500))
+    secret: Mapped[str] = mapped_column(String(64))
+    events: Mapped[list] = mapped_column(JSONB, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    fail_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class WebhookDelivery(TenantScoped, Base):
+    __tablename__ = "webhook_deliveries"
+    endpoint_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    event: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending / delivered / failed / mock
+    response_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ImChannel(TenantScoped, Base):
+    """企微/钉钉/飞书/Slack 助手（mock）。"""
+    __tablename__ = "im_channels"
+    provider: Mapped[str] = mapped_column(String(16))  # wecom / dingtalk / feishu / slack
+    name: Mapped[str] = mapped_column(String(100))
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)  # corp_id / agent_id etc (encrypted fields in enc later)
+    status: Mapped[str] = mapped_column(String(16), default="mock")
+
+
+class ImMessage(TenantScoped, Base):
+    __tablename__ = "im_messages"
+    channel_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    direction: Mapped[str] = mapped_column(String(3))
+    user_ext_id: Mapped[str] = mapped_column(String(64))
+    text: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="mock")
+
+
+class LeadCharge(TenantScoped, Base):
+    """按合格商机付费记账。"""
+    __tablename__ = "lead_charges"
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    amount_minor: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3), default="CNY")
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending / billed / void
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class ErpConnection(TenantScoped, Base):
+    __tablename__ = "erp_connections"
+    name: Mapped[str] = mapped_column(String(100))
+    kind: Mapped[str] = mapped_column(String(32), default="csv")  # csv / mock_api / kingdee / yonyou
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="active")
+
+
+class ErpJob(TenantScoped, Base):
+    __tablename__ = "erp_jobs"
+    connection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    direction: Mapped[str] = mapped_column(String(8))  # export / import
+    object_type: Mapped[str] = mapped_column(String(32))  # account / product / order / quote
+    status: Mapped[str] = mapped_column(String(16), default="done")
+    rows: Mapped[int] = mapped_column(Integer, default=0)
+    file_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class AcademyArticle(TimestampMixin, Base):
+    """学院文章（平台级）。"""
+    __tablename__ = "academy_articles"
+    slug: Mapped[str] = mapped_column(String(100), unique=True)
+    title: Mapped[str] = mapped_column(String(200))
+    category: Mapped[str] = mapped_column(String(64), default="getting-started")
+    body_md: Mapped[str] = mapped_column(Text)
+    lang: Mapped[str] = mapped_column(String(8), default="zh")
+    published: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class FeedbackItem(TenantScoped, Base):
+    __tablename__ = "feedback_items"
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(16), default="idea")  # idea / bug / praise
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open / planned / doing / done / wontfix
+    votes: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class RoadmapItem(TimestampMixin, Base):
+    __tablename__ = "roadmap_items"
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="planned")  # planned / doing / shipped
+    quarter: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    votes: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class Subprocessor(TimestampMixin, Base):
+    __tablename__ = "subprocessors"
+    name: Mapped[str] = mapped_column(String(128))
+    purpose: Mapped[str] = mapped_column(String(256))
+    location: Mapped[str] = mapped_column(String(64), default="HK")
+    url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class SubprocessorNotice(TimestampMixin, Base):
+    __tablename__ = "subprocessor_notices"
+    subprocessor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    change: Mapped[str] = mapped_column(String(32))  # added / removed / location_change
+    detail: Mapped[str] = mapped_column(Text)
+    effective_on: Mapped[date] = mapped_column(Date)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SlaCredit(TenantScoped, Base):
+    """SLA 自动赔付点数。"""
+    __tablename__ = "sla_credits"
+    reason: Mapped[str] = mapped_column(String(64))
+    amount: Mapped[float] = mapped_column(Float)
+    period: Mapped[str] = mapped_column(String(16))
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict)

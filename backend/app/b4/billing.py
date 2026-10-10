@@ -13,12 +13,14 @@ from app.core.errors import AppError
 from app.models import Budget, CreditEntry, Handoff, Invoice, Plan, PriceNotice, Subscription, Tenant, User
 
 DEFAULT_PLANS = [
-    dict(code="starter", name="入门版", monthly_fee_minor=99900, seat_fee_minor=19900, included_seats=2, included_credits=300, rollover_pct=100,  # noqa: E501
-         features={"agent": True, "widgets": 1, "l2": False}),
-    dict(code="growth", name="成长版", monthly_fee_minor=299900, seat_fee_minor=19900, included_seats=5, included_credits=1200, rollover_pct=100,  # noqa: E501
+    dict(code="starter", name="入门版", monthly_fee_minor=99900, seat_fee_minor=19900, included_seats=2, included_credits=300, rollover_pct=100, billing_mode="subscription", lead_price_minor=0,  # noqa: E501
+         features={}),
+    dict(code="per_lead", name="按合格商机", monthly_fee_minor=0, seat_fee_minor=9900, included_seats=1, included_credits=100, rollover_pct=0,
+         billing_mode="per_lead", lead_price_minor=19900, features={"pay_per_lead": True, "agent": True, "widgets": 1, "l2": False}),  # noqa: E501
+    dict(code="growth", name="成长版", monthly_fee_minor=299900, seat_fee_minor=19900, included_seats=5, included_credits=1200, rollover_pct=100, billing_mode="subscription", lead_price_minor=0,  # noqa: E501
          features={"agent": True, "widgets": 5, "l2": True}),
-    dict(code="pro", name="专业版", monthly_fee_minor=699900, seat_fee_minor=14900, included_seats=15, included_credits=4000, rollover_pct=100,  # noqa: E501
-         features={"agent": True, "widgets": 20, "l2": True, "api": True}),
+    dict(code="pro", name="专业版", monthly_fee_minor=699900, seat_fee_minor=14900, included_seats=15, included_credits=4000, rollover_pct=100, billing_mode="hybrid", lead_price_minor=9900,  # noqa: E501
+         features={"agent": True, "widgets": 20, "l2": True, "api": True, "pay_per_lead": True}),
 ]
 
 

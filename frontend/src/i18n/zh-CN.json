@@ -42,7 +42,8 @@
     "billingPlus": "套餐与预算",
     "support": "帮助与支持",
     "aiLab": "AI 实验室",
-    "dataHub": "数据中枢"
+    "dataHub": "数据中枢",
+    "platform": "平台与站点"
   },
   "login": {
     "title": "登录拓域 AI",
@@ -1872,5 +1873,46 @@
   "compliance": {
     "aiDisclose": "对外邮件 AI 披露（默认关）",
     "aiDiscloseEu": "欧盟/EEA/UK 收件人覆盖（默认开）"
+  },
+  "b78": {
+    "siteNote": "独立站发布在路径 /s/{slug}/，无需绑定真实域名；含 sitemap/robots 与基础 SEO。产品页会套用承诺边界过滤。",
+    "title": "标题",
+    "create": "创建",
+    "status": "状态",
+    "genProducts": "从产品库生成页面",
+    "publish": "发布",
+    "open": "打开",
+    "oauthGoogle": "Google OAuth 说明",
+    "oauthMs": "Microsoft OAuth 说明",
+    "oauthStub": "创建 OAuth 桩发件箱",
+    "runSeed": "跑种子测试",
+    "warmup": "预热互发一轮",
+    "delivNote": "种子测试与预热网络均为本地模拟；OAuth 真实连接需完成厂商验证并配置 Client ID。",
+    "subject": "主题",
+    "inboxRate": "进箱率",
+    "newKey": "新建 API Key",
+    "newWh": "新建 Webhook",
+    "testWh": "试投递",
+    "name": "名称",
+    "revoke": "吊销",
+    "academy": "学院",
+    "roadmap": "产品路线图",
+    "subprocessors": "子处理者",
+    "purpose": "用途",
+    "location": "地区",
+    "feedback": "反馈",
+    "submit": "提交",
+    "addErp": "添加 CSV 连接",
+    "kind": "类型",
+    "export": "导出",
+    "importCsv": "导入",
+    "provider": "平台",
+    "tryIm": "模拟入站",
+    "tabSite": "独立站 / SEO",
+    "tabDeliv": "投递与 OAuth",
+    "tabDev": "开放平台",
+    "tabErp": "ERP",
+    "tabIm": "IM 助手",
+    "tabSuccess": "学院与反馈"
   }
 }
