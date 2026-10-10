@@ -73,3 +73,24 @@ def test_orm_auto_filter_and_cross_write_blocked(client):
         with pytest.raises(TenantContextMissing):
             db.flush()
     db.close()
+
+
+def test_paginated_totals_isolated(client):
+    """回归：分页 total 用子查询计数，也必须按租户过滤。"""
+    ha = register(client, "a@x.com", "公司A")
+    hb = register(client, "b@y.com", "公司B")
+    add_user(client, ha, "a2@x.com", "sales")
+    add_user(client, ha, "a3@x.com", "sales")
+    assert client.get("/api/v1/users", headers=ha).json()["total"] == 3
+    assert client.get("/api/v1/users", headers=hb).json()["total"] == 1
+    assert client.get("/api/v1/audit-logs", headers=hb).json()["total"] == len(
+        client.get("/api/v1/audit-logs", headers=hb).json()["items"])
+
+
+def test_raw_count_subquery_without_context_raises(client):
+    from sqlalchemy import func
+    register(client, "a@x.com")
+    db = SessionLocal()
+    with pytest.raises(TenantContextMissing):
+        db.scalar(select(func.count()).select_from(select(User).subquery()))
+    db.close()

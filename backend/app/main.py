@@ -6,6 +6,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from app.api.p1 import router as p1_router
+from app.api.platform import router as platform_router
 from app.api.routes import router
 from app.core.config import get_settings
 from app.core.context import tenant_id_var, trace_id_var
@@ -44,3 +46,5 @@ def healthz():
 
 
 app.include_router(router)
+app.include_router(platform_router)
+app.include_router(p1_router)

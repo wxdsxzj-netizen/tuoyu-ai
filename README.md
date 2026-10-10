@@ -1,4 +1,4 @@
-# 拓域 AI（P0 项目骨架）
+# 拓域 AI（P0 骨架 + P1 核心数据）
 
 外贸 AI 获客平台的 P0 阶段：多租户、账号与角色、权限、审计日志、统一错误码、异步作业框架、LLM 网关，以及前端管理后台外壳。
 
@@ -23,7 +23,7 @@ frontend/        管理后台（登录、成员管理、组织设置、审计日
 ```bash
 cp .env.example .env        # 修改 TL_JWT_SECRET
 docker compose up --build
-docker compose exec backend python -m app.seed   # 创建演示账号
+docker compose exec backend python -m app.admin create-tenant --tenant 演示外贸公司 --email owner@demo.com --name 所有者 --password Demo@123456
 ```
 打开 http://localhost:5173 ，用 `owner@demo.com / Demo@123456` 登录。API 文档：http://localhost:8000/docs
 
@@ -39,7 +39,7 @@ python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 cp .env.example .env
 cd backend
 ../.venv/bin/alembic upgrade head
-../.venv/bin/python -m app.seed
+../.venv/bin/python -m app.admin create-tenant --tenant 演示外贸公司 --email owner@demo.com --name 所有者 --password Demo@123456
 ../.venv/bin/uvicorn app.main:app --port 8000 --env-file ../.env
 # 另开终端启动 worker（需先导出 .env 里的变量）
 set -a; . ../.env; set +a; ../.venv/bin/celery -A app.tasks.celery_app worker -l info
@@ -67,7 +67,6 @@ CI 配置见 `.github/workflows/ci.yml`。
 ## 主要接口
 | 方法 | 路径 | 权限 |
 |---|---|---|
-| POST | /api/v1/auth/register | 公开（注册新组织并成为所有者） |
 | POST | /api/v1/auth/login | 公开 |
 | GET | /api/v1/auth/me | 登录 |
 | GET/PATCH | /api/v1/tenant | tenant.read / tenant.update |
@@ -76,3 +75,18 @@ CI 配置见 `.github/workflows/ci.yml`。
 | GET | /api/v1/audit-logs | audit.read |
 | POST/GET | /api/v1/jobs | job.run / job.read |
 | POST | /api/v1/llm/chat | llm.use |
+
+## 开通租户（试点期不开放自助注册）
+- 命令行：`python -m app.admin create-tenant --tenant 公司名 --email 老板邮箱 --name 姓名 --password 初始密码`；`list-tenants` 查看；`sync-roles` 在权限点变更后同步所有租户的系统角色。
+- HTTP：设置 `TL_PLATFORM_ADMIN_TOKEN` 后，`POST /api/v1/platform/tenants`（请求头 `X-Platform-Admin-Token`），`GET /api/v1/platform/tenants`。未设置时接口禁用。
+
+## P1 核心数据
+| 功能 | 说明 | 接口 |
+|---|---|---|
+| 官网解析 → 知识库 | 1–5 个网址，必须勾选“有权使用该网站内容”；遵守 robots.txt，只在起始域名内抓取，sitemap 与产品页优先，拒绝内网地址；抽取公司简介、产品、认证、案例、联系方式，全部“待确认”并挂来源页；LLM 不可用时降级为规则抽取 | `POST /kb/crawls`、`GET /kb/items`、`POST /kb/items:batch` |
+| ICP | 导入 ≥ 10 个成交客户后按行业聚类生成 2–5 个 ICP 草稿（LLM 写描述）；也可手工新建；启用需行业、国家、角色三项 | `POST /icps:generate`、`/icps`、`/icps/{id}:activate` |
+| 公司 / 联系人 | 租户私有档案；判重：域名一致自动合并，名称相似（Jaro-Winkler ≥ 0.92）+ 同国 + 电话或地址佐证为疑似重复；联系人按规范化邮箱合并；导入的邮箱一律“未验证” | `/companies`、`/companies/facets`、`/contacts` |
+| CSV / Excel 导入 | 公司、联系人、成交客户；自动识别中英文表头，可手工映射；支持仅预检；行级校验（必填、邮箱、国家、网址、金额、日期）；疑似重复默认不导入；可下载错误报告；GBK/UTF-8 自动识别；Celery 异步 | `POST /imports:preview`、`POST /imports`、`GET /imports/{id}/errors.csv` |
+| 联系人数据源 | 可插拔接口（Apollo / Hunter / Snov），当前只有 mock；配置真实数据源但无 Key 时返回 `DATA_PROVIDER_UNAVAILABLE`，不会回退到抓取 | `POST /companies/{id}:enrich-contacts` |
+
+角色权限：所有者 / 管理员可管理知识库与 ICP；业务员可查看知识库和 ICP，可新建公司 / 联系人、导入、调用数据源。

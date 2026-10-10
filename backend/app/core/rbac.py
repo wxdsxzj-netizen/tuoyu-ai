@@ -11,10 +11,19 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "job.read": ("查看作业", "View jobs"),
     "llm.use": ("使用 AI", "Use AI"),
     "billing.manage": ("计费与解约", "Billing"),
+    "kb.read": ("查看知识库", "View knowledge base"),
+    "kb.manage": ("管理知识库与官网解析", "Manage knowledge base"),
+    "icp.read": ("查看 ICP", "View ICP"),
+    "icp.manage": ("管理 ICP", "Manage ICP"),
+    "company.read": ("查看公司与联系人", "View companies & contacts"),
+    "company.manage": ("新建/编辑公司与联系人", "Manage companies & contacts"),
+    "contact.enrich": ("调用联系人数据源", "Enrich contacts"),
+    "import.run": ("导入数据", "Import data"),
 }
 
 SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {
     "owner": ("所有者", set(PERMISSIONS)),
     "admin": ("管理员", set(PERMISSIONS) - {"billing.manage"}),
-    "sales": ("业务员", {"tenant.read", "user.read", "job.run", "job.read", "llm.use"}),
+    "sales": ("业务员", {"tenant.read", "user.read", "job.run", "job.read", "llm.use",
+                         "kb.read", "icp.read", "company.read", "company.manage", "contact.enrich", "import.run"}),
 }

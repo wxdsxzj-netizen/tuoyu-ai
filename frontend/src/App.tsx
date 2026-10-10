@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { Layout, Menu, Dropdown, Spin, Space, Select, Typography } from 'antd'
-import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
+import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined, BookOutlined, AimOutlined, BankOutlined, ContactsOutlined, ImportOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from './auth'
 import i18n, { LOCALE_KEY } from './i18n'
@@ -10,6 +10,11 @@ import TenantPage from './pages/Tenant'
 import AuditPage from './pages/Audit'
 import JobsPage from './pages/Jobs'
 import Dashboard from './pages/Dashboard'
+import KbPage from './pages/Kb'
+import IcpPage from './pages/Icp'
+import CompaniesPage from './pages/Companies'
+import ContactsPage from './pages/Contacts'
+import ImportsPage from './pages/Imports'
 
 function Shell() {
   const { me, can, logout } = useAuth()
@@ -18,6 +23,11 @@ function Shell() {
   const loc = useLocation()
   const items = [
     { key: '/', icon: <DashboardOutlined />, label: t('menu.dashboard') },
+    can('kb.read') && { key: '/kb', icon: <BookOutlined />, label: t('menu.kb') },
+    can('icp.read') && { key: '/icp', icon: <AimOutlined />, label: t('menu.icp') },
+    can('company.read') && { key: '/companies', icon: <BankOutlined />, label: t('menu.companies') },
+    can('company.read') && { key: '/contacts', icon: <ContactsOutlined />, label: t('menu.contacts') },
+    can('import.run') && { key: '/imports', icon: <ImportOutlined />, label: t('menu.imports') },
     can('user.read') && { key: '/users', icon: <TeamOutlined />, label: t('menu.users') },
     can('tenant.read') && { key: '/tenant', icon: <SettingOutlined />, label: t('menu.tenant') },
     can('audit.read') && { key: '/audit', icon: <AuditOutlined />, label: t('menu.audit') },
@@ -42,6 +52,11 @@ function Shell() {
         <Layout.Content style={{ margin: 24 }}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/kb" element={<KbPage />} />
+            <Route path="/icp" element={<IcpPage />} />
+            <Route path="/companies" element={<CompaniesPage />} />
+            <Route path="/contacts" element={<ContactsPage />} />
+            <Route path="/imports" element={<ImportsPage />} />
             <Route path="/users" element={<UsersPage />} />
             <Route path="/tenant" element={<TenantPage />} />
             <Route path="/audit" element={<AuditPage />} />

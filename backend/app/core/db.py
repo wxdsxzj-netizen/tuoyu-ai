@@ -74,6 +74,15 @@ def tenant_context(tenant_id: uuid.UUID):
         tenant_id_var.reset(tok)
 
 
+def _touches_tenant_tables(state) -> bool:
+    from sqlalchemy.sql.util import find_tables
+    if any(isinstance(m.class_, type) and issubclass(m.class_, TenantOwned) for m in state.all_mappers):
+        return True
+    tenant_tables = {m.local_table.name for m in Base.registry.mappers if issubclass(m.class_, TenantOwned)}
+    return any(getattr(t, "name", None) in tenant_tables
+               for t in find_tables(state.statement, include_crud=True, include_aliases=True, check_columns=True))
+
+
 def current_tenant(session: Session | None = None):
     """优先取会话绑定的租户（请求级），否则取上下文变量（任务/脚本）。"""
     if session is not None and session.info.get("tenant_id") is not None:
@@ -88,14 +97,11 @@ def _add_tenant_filter(state):
     if state.execution_options.get("skip_tenant_filter"):
         return
     tid = current_tenant(state.session)
-    touches_tenant = any(
-        isinstance(m.class_, type) and issubclass(m.class_, TenantOwned)
-        for m in state.all_mappers
-    )
-    if not touches_tenant:
-        return
     if tid is None:
-        raise TenantContextMissing("查询租户数据时缺少租户上下文")
+        # 无租户上下文：只要语句涉及任何租户表（包括子查询里），一律拒绝
+        if _touches_tenant_tables(state):
+            raise TenantContextMissing("查询租户数据时缺少租户上下文")
+        return
     state.statement = state.statement.options(
         with_loader_criteria(TenantOwned, lambda cls: cls.tenant_id == tid, include_aliases=True)
     )

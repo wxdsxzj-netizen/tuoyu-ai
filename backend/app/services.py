@@ -26,7 +26,8 @@ def email_taken(db: Session, email: str) -> bool:
 
 
 def create_tenant_with_owner(db: Session, *, tenant_name: str, owner_email: str, owner_name: str,
-                             password: str, slug: str | None = None) -> tuple[Tenant, User]:
+                             password: str, slug: str | None = None,
+                             actor_type: str = "platform") -> tuple[Tenant, User]:
     owner_email = owner_email.lower().strip()
     if email_taken(db, owner_email):
         raise AppError("COMMON_ALREADY_EXISTS", details={"field": "email"})
@@ -50,7 +51,23 @@ def create_tenant_with_owner(db: Session, *, tenant_name: str, owner_email: str,
                      password_hash=hash_password(password), role_id=roles["owner"].id)
         db.add(owner)
         db.flush()
-        write_audit(db, tenant_id=tenant.id, action="tenant.create", actor_type="user", actor_id=owner.id,
+        write_audit(db, tenant_id=tenant.id, action="tenant.create", actor_type=actor_type, actor_id=None,
                     object_type="tenant", object_id=tenant.id, after={"name": tenant_name, "owner": owner_email})
     db.commit()
     return tenant, owner
+
+
+def sync_system_roles(db: Session) -> int:
+    """把 rbac.py 中的权限点同步到所有租户的系统角色（新增权限点后执行）。"""
+    sync_permissions(db)
+    perms = {p.code: p for p in db.scalars(select(Permission))}
+    n = 0
+    with bypass_tenant():
+        for t in db.scalars(select(Tenant)).all():
+            with tenant_context(t.id):
+                for role in db.scalars(select(Role).where(Role.tenant_id == t.id, Role.is_system.is_(True))):
+                    if role.code in SYSTEM_ROLES:
+                        role.permissions = [perms[c] for c in sorted(SYSTEM_ROLES[role.code][1])]
+            n += 1
+    db.commit()
+    return n

@@ -19,7 +19,6 @@ from app.schemas import (
     LoginIn,
     MeOut,
     Page,
-    RegisterIn,
     TenantOut,
     TenantUpdate,
     TokenOut,
@@ -28,19 +27,12 @@ from app.schemas import (
     role_out,
     user_out,
 )
-from app.services import create_tenant_with_owner, email_taken
+from app.services import email_taken
 
 router = APIRouter(prefix="/api/v1")
 
 
 # ---------- 认证 ----------
-@router.post("/auth/register", response_model=TokenOut, tags=["auth"])
-def register(body: RegisterIn, db: Session = Depends(get_db)):
-    tenant, owner = create_tenant_with_owner(db, tenant_name=body.tenant_name, owner_email=body.email,
-                                             owner_name=body.name, password=body.password)
-    return TokenOut(access_token=create_access_token(owner.id, tenant.id))
-
-
 @router.post("/auth/login", response_model=TokenOut, tags=["auth"])
 def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     with bypass_tenant():  # 登录时尚无租户上下文，按全局唯一邮箱查找

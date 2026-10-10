@@ -25,14 +25,8 @@ def test_unauthenticated_and_bad_token(client):
     assert r.status_code == 401
 
 
-def test_duplicate_email(client):
-    register(client, "a@x.com")
-    r = client.post("/api/v1/auth/register", json={"tenant_name": "B", "name": "b", "email": "a@x.com", "password": "Passw0rd!x"})
-    assert r.status_code == 409 and r.json()["error"]["code"] == "COMMON_ALREADY_EXISTS"
-
-
 def test_validation_error(client):
-    r = client.post("/api/v1/auth/register", json={"tenant_name": "", "name": "b", "email": "bad", "password": "1"})
+    r = client.post("/api/v1/auth/login", json={"email": "bad", "password": ""})
     assert r.status_code == 400 and r.json()["error"]["code"] == "COMMON_VALIDATION"
 
 

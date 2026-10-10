@@ -8,11 +8,12 @@ class ORM(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class RegisterIn(BaseModel):
+class TenantProvisionIn(BaseModel):
     tenant_name: str = Field(min_length=1, max_length=128)
-    name: str = Field(min_length=1, max_length=64)
-    email: EmailStr
+    owner_name: str = Field(min_length=1, max_length=64)
+    owner_email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+    slug: str | None = Field(None, pattern="^[a-z0-9-]{3,64}$")
 
 
 class LoginIn(BaseModel):

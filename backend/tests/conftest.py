@@ -4,6 +4,9 @@ os.environ.setdefault("TL_DATABASE_URL", "postgresql+psycopg://tl:tl@localhost:5
 os.environ["TL_CELERY_EAGER"] = "true"
 os.environ["TL_LLM_PRIMARY"] = "mock"
 os.environ["TL_LLM_FALLBACK"] = ""
+os.environ["TL_PLATFORM_ADMIN_TOKEN"] = "test-platform-token"
+os.environ["TL_CRAWL_ALLOW_PRIVATE"] = "true"
+os.environ["TL_UPLOAD_DIR"] = "/tmp/tuoyu-test-uploads"
 
 import pytest
 from alembic.config import Config
@@ -30,7 +33,7 @@ def migrate():
 def clean():
     yield
     with engine.begin() as c:
-        c.execute(text("TRUNCATE audit_logs, jobs, users, role_permissions, roles, tenants CASCADE"))
+        c.execute(text("TRUNCATE audit_logs, jobs, crawled_pages, crawl_jobs, knowledge_items, icps, contacts, companies, import_jobs, users, role_permissions, roles, tenants CASCADE"))
 
 
 @pytest.fixture
@@ -39,7 +42,13 @@ def client():
 
 
 def register(client, email, tenant="公司A", pw="Passw0rd!x"):
-    r = client.post("/api/v1/auth/register", json={"tenant_name": tenant, "name": "老板", "email": email, "password": pw})
+    """试点期没有自助注册：通过平台管理员服务开通租户，再登录。"""
+    from app.core.db import SessionLocal
+    from app.services import create_tenant_with_owner
+    db = SessionLocal()
+    create_tenant_with_owner(db, tenant_name=tenant, owner_email=email, owner_name="老板", password=pw)
+    db.close()
+    r = client.post("/api/v1/auth/login", json={"email": email, "password": pw})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
