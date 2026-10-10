@@ -1,8 +1,9 @@
 """种子测试（mock）、预热互发网络（模拟节点）、OAuth 发件箱连接桩、电话/WhatsApp 号码验证（mock）。"""
+
 import hashlib
 import random
 import secrets
-from datetime import date, timedelta
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,17 +14,27 @@ from app.core.errors import AppError
 from app.models import Mailbox, SeedInbox, SeedTest, WarmupExchange, WarmupPeer
 
 OAUTH_PROVIDERS = {
-    "google": {"auth_url": "https://accounts.google.com/o/oauth2/v2/auth", "scopes": ["gmail.send", "gmail.readonly"],
-               "note": "需完成 Google 受限范围验证（CASA）后才能对真实账号生效；当前为连接桩。"},
-    "microsoft": {"auth_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-                  "scopes": ["Mail.Send", "Mail.Read"], "note": "需完成 Microsoft 发布者验证；当前为连接桩。"},
+    "google": {
+        "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "scopes": ["gmail.send", "gmail.readonly"],
+        "note": "需完成 Google 受限范围验证（CASA）后才能对真实账号生效；当前为连接桩。",
+    },
+    "microsoft": {
+        "auth_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "scopes": ["Mail.Send", "Mail.Read"],
+        "note": "需完成 Microsoft 发布者验证；当前为连接桩。",
+    },
 }
 
 
 def seed_inboxes(db: Session) -> int:
-    samples = [("seed1@mock-gmail.test", "gmail", "US"), ("seed2@mock-outlook.test", "outlook", "DE"),
-               ("seed3@mock-yahoo.test", "yahoo", "GB"), ("seed4@mock-gmail.test", "gmail", "SG"),
-               ("seed5@mock-outlook.test", "outlook", "US")]
+    samples = [
+        ("seed1@mock-gmail.test", "gmail", "US"),
+        ("seed2@mock-outlook.test", "outlook", "DE"),
+        ("seed3@mock-yahoo.test", "yahoo", "GB"),
+        ("seed4@mock-gmail.test", "gmail", "SG"),
+        ("seed5@mock-outlook.test", "outlook", "US"),
+    ]
     n = 0
     with bypass_tenant():
         for addr, prov, reg in samples:
@@ -54,8 +65,15 @@ def run_seed_test(db: Session, mailbox: Mailbox | None, subject: str, body: str,
         folder = "inbox" if rng.random() < p_inbox else ("spam" if rng.random() < 0.7 else "missing")
         if folder == "inbox":
             inbox += 1
-        results.append({"address": b.address, "provider": b.provider, "region": b.region, "folder": folder,
-                        "latency_s": round(1 + rng.random() * 8, 1)})
+        results.append(
+            {
+                "address": b.address,
+                "provider": b.provider,
+                "region": b.region,
+                "folder": folder,
+                "latency_s": round(1 + rng.random() * 8, 1),
+            }
+        )
     t.results, t.inbox_rate, t.status, t.finished_at = results, round(inbox / len(boxes), 3), "done", utcnow()
     db.flush()
     return t
@@ -68,8 +86,9 @@ def ensure_warmup_peers(db: Session) -> int:
             addr = f"peer{i}@warmup-net.mock"
             if db.scalar(select(WarmupPeer.id).where(WarmupPeer.address == addr)):
                 continue
-            db.add(WarmupPeer(address=addr, domain="warmup-net.mock", region=["US", "DE", "SG", "JP"][i % 4],
-                             reputation=0.6 + (i % 5) * 0.08))
+            db.add(
+                WarmupPeer(address=addr, domain="warmup-net.mock", region=["US", "DE", "SG", "JP"][i % 4], reputation=0.6 + (i % 5) * 0.08)
+            )
             n += 1
         db.flush()
     return n
@@ -78,6 +97,7 @@ def ensure_warmup_peers(db: Session) -> int:
 def warmup_tick(db: Session, mailbox: Mailbox, today: date | None = None) -> dict:
     """模拟与预热网络互发：每天按爬坡额度生成若干 simulated 交换记录。"""
     from app.outreach.health import warmup_day, warmup_quota
+
     today = today or date.today()
     if mailbox.status not in ("warming", "active"):
         return {"exchanges": 0}
@@ -92,7 +112,11 @@ def warmup_tick(db: Session, mailbox: Mailbox, today: date | None = None) -> dic
     n = 0
     for peer in peers[:quota]:
         db.add(WarmupExchange(mailbox_id=mailbox.id, peer_id=peer.id, direction="out", status="simulated", day=today))
-        db.add(WarmupExchange(mailbox_id=mailbox.id, peer_id=peer.id, direction="in", status="opened" if peer.reputation > 0.7 else "simulated", day=today))
+        db.add(
+            WarmupExchange(
+                mailbox_id=mailbox.id, peer_id=peer.id, direction="in", status="opened" if peer.reputation > 0.7 else "simulated", day=today
+            )
+        )
         n += 2
     db.flush()
     return {"exchanges": n, "peers": quota}
@@ -110,11 +134,34 @@ def oauth_start(db: Session, provider: str, user_id, redirect_uri: str | None = 
     url = None
     if not stub:
         from urllib.parse import urlencode
-        url = meta["auth_url"] + "?" + urlencode({"client_id": client_id, "response_type": "code", "scope": " ".join(meta["scopes"]),
-                                                   "state": state, "redirect_uri": redirect_uri or "https://app.example/oauth/callback"})
-    return {"provider": provider, "state": state, "authorize_url": url, "stub": stub, "scopes": meta["scopes"], "note": meta["note"],
-            "next_steps": ["在云控制台创建 OAuth 应用并完成验证", "配置 TL_GOOGLE_OAUTH_CLIENT_ID / TL_MICROSOFT_OAUTH_CLIENT_ID",
-                           "回调地址指向 /api/v1/mailboxes/oauth/{provider}:callback", "验证通过前可用「完成桩连接」创建 stub 发件箱用于流程演练"]}
+
+        url = (
+            meta["auth_url"]
+            + "?"
+            + urlencode(
+                {
+                    "client_id": client_id,
+                    "response_type": "code",
+                    "scope": " ".join(meta["scopes"]),
+                    "state": state,
+                    "redirect_uri": redirect_uri or "https://app.example/oauth/callback",
+                }
+            )
+        )
+    return {
+        "provider": provider,
+        "state": state,
+        "authorize_url": url,
+        "stub": stub,
+        "scopes": meta["scopes"],
+        "note": meta["note"],
+        "next_steps": [
+            "在云控制台创建 OAuth 应用并完成验证",
+            "配置 TL_GOOGLE_OAUTH_CLIENT_ID / TL_MICROSOFT_OAUTH_CLIENT_ID",
+            "回调地址指向 /api/v1/mailboxes/oauth/{provider}:callback",
+            "验证通过前可用「完成桩连接」创建 stub 发件箱用于流程演练",
+        ],
+    }
 
 
 def oauth_complete_stub(db: Session, provider: str, email: str, user_id) -> Mailbox:
@@ -122,12 +169,25 @@ def oauth_complete_stub(db: Session, provider: str, email: str, user_id) -> Mail
     if provider not in OAUTH_PROVIDERS:
         raise AppError("COMMON_VALIDATION")
     email = email.lower().strip()
-    mb = Mailbox(address=email, display_name=email.split("@")[0], provider=provider, owner_id=user_id,
-                 smtp_host="localhost", smtp_port=1025, smtp_security="none", smtp_username=email,
-                 imap_host="localhost", imap_port=1143, imap_username=email, auth_status="ok", status="active",
-                 oauth_provider=provider, oauth_status="stub",
-                 oauth_meta={"connected_at": utcnow().isoformat(), "mode": "stub", "note": OAUTH_PROVIDERS[provider]["note"]},
-                 created_by=user_id)
+    mb = Mailbox(
+        address=email,
+        display_name=email.split("@")[0],
+        provider=provider,
+        owner_id=user_id,
+        smtp_host="localhost",
+        smtp_port=1025,
+        smtp_security="none",
+        smtp_username=email,
+        imap_host="localhost",
+        imap_port=1143,
+        imap_username=email,
+        auth_status="ok",
+        status="active",
+        oauth_provider=provider,
+        oauth_status="stub",
+        oauth_meta={"connected_at": utcnow().isoformat(), "mode": "stub", "note": OAUTH_PROVIDERS[provider]["note"]},
+        created_by=user_id,
+    )
     db.add(mb)
     db.flush()
     return mb
@@ -136,9 +196,16 @@ def oauth_complete_stub(db: Session, provider: str, email: str, user_id) -> Mail
 def verify_phone_mock(phone: str) -> dict:
     """电话验证 mock：E.164 格式 + 号段启发式。"""
     import re
+
     p = re.sub(r"[^\d+]", "", phone or "")
     if not re.match(r"^\+?[1-9]\d{6,14}$", p):
         return {"status": "invalid", "line_type": None, "whatsapp": False, "provider": "mock", "confidence": 0.9}
     wa = p.endswith(("0", "2", "4", "6", "8"))  # 确定性假结果
-    return {"status": "valid", "line_type": "mobile" if len(p) >= 10 else "landline", "whatsapp": wa,
-            "provider": "mock", "confidence": 0.75, "e164": p if p.startswith("+") else "+" + p}
+    return {
+        "status": "valid",
+        "line_type": "mobile" if len(p) >= 10 else "landline",
+        "whatsapp": wa,
+        "provider": "mock",
+        "confidence": 0.75,
+        "e164": p if p.startswith("+") else "+" + p,
+    }

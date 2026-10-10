@@ -1,4 +1,5 @@
 """B7/B8：独立站、种子/预热、OAuth 桩、电话、Meta、OpenAPI/Webhook/MCP、IM、ERP、学院。"""
+
 import io
 
 from sqlalchemy import select
@@ -39,11 +40,16 @@ def test_site_seed_oauth_phone_meta_openapi(client):
     assert client.post(f"{P}/contacts:phone-verify", headers=h, json={"phone": "+14155552671"}).json()["status"] == "valid"
     pt = client.post(f"{P}/phone-tasks", headers=h, json={"phone": "+14155552671", "script": "Hi"})
     assert pt.status_code == 200, pt.text
-    assert client.post(f"{P}/phone-tasks/{pt.json()['id']}:complete", headers=h, json={"status": "done", "outcome": "interested"}).status_code == 200
+    assert (
+        client.post(f"{P}/phone-tasks/{pt.json()['id']}:complete", headers=h, json={"status": "done", "outcome": "interested"}).status_code
+        == 200
+    )
 
     ch = client.post(f"{P}/meta/channels", headers=h, json={"platform": "facebook", "page_id": "p1", "page_name": "Page"})
     assert ch.status_code == 200
-    m = client.post(f"{P}/meta/messages", headers=h, json={"channel_id": ch.json()["id"], "peer_id": "u1", "body": "hi", "human_only": True})
+    m = client.post(
+        f"{P}/meta/messages", headers=h, json={"channel_id": ch.json()["id"], "peer_id": "u1", "body": "hi", "human_only": True}
+    )
     assert m.json()["human_task"] is True
 
     k = client.post(f"{P}/developer/api-keys", headers=h, json={"name": "test", "scopes": ["read"]})
@@ -64,8 +70,9 @@ def test_site_seed_oauth_phone_meta_openapi(client):
     cid = erp.json()["id"]
     assert client.post(f"{P}/erp/connections/{cid}/export?object_type=account", headers=h).status_code == 200
     csv = "name_zh,name_en,model\n泵,Pump,P-1\n"
-    r = client.post(f"{P}/erp/connections/{cid}/import?object_type=product", headers=h,
-                    files={"file": ("p.csv", io.BytesIO(csv.encode()), "text/csv")})
+    r = client.post(
+        f"{P}/erp/connections/{cid}/import?object_type=product", headers=h, files={"file": ("p.csv", io.BytesIO(csv.encode()), "text/csv")}
+    )
     assert r.status_code == 200 and r.json()["rows"] == 1
 
     assert len(client.get(f"{P}/academy", headers=h).json()) >= 1
@@ -74,7 +81,12 @@ def test_site_seed_oauth_phone_meta_openapi(client):
     assert len(client.get(f"{P}/subprocessors", headers=h).json()) >= 1
 
     csv2 = "a@b.com\nc@d.com\n"
-    assert client.post(f"{P}/suppressions:import", headers=h, files={"file": ("s.csv", io.BytesIO(csv2.encode()), "text/csv")}).json()["imported"] == 2
+    assert (
+        client.post(f"{P}/suppressions:import", headers=h, files={"file": ("s.csv", io.BytesIO(csv2.encode()), "text/csv")}).json()[
+            "imported"
+        ]
+        == 2
+    )
 
     db = SessionLocal()
     try:

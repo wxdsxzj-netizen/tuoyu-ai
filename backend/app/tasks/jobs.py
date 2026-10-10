@@ -452,11 +452,12 @@ def b6_daily_task():
 @celery_app.task(name="b7.daily")
 def b7_daily_task():
     """预热互发模拟 + 学院种子。"""
+    from sqlalchemy import select
+
     from app.b7 import delivery
     from app.b8 import platform as plat
     from app.core.db import SessionLocal, bypass_tenant, tenant_context
     from app.models import Mailbox, Tenant
-    from sqlalchemy import select
 
     db = SessionLocal()
     out = {"warmup": {}}

@@ -1,4 +1,5 @@
 """B7/B8：独立站、种子/预热、OAuth 桩、FB/IG、电话任务、OpenAPI/Webhook/MCP、IM、按商机付费、ERP、学院/反馈、子处理者、SLA。"""
+
 import hashlib
 import uuid
 from datetime import date
@@ -10,7 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.platform import platform_admin
-from app.b7 import delivery, site as site_mod, social
+from app.b7 import delivery, social
+from app.b7 import site as site_mod
 from app.b8 import platform as plat_mod
 from app.core.audit import write_audit
 from app.core.db import bypass_tenant, get_db, utcnow
@@ -20,7 +22,6 @@ from app.models import (
     AcademyArticle,
     ApiKey,
     ErpConnection,
-    ErpJob,
     FeedbackItem,
     ImChannel,
     ImMessage,
@@ -34,9 +35,9 @@ from app.models import (
     SeedTest,
     Site,
     SitePage,
+    SlaCredit,
     Subprocessor,
     SubprocessorNotice,
-    SlaCredit,
     WarmupExchange,
     WebhookDelivery,
     WebhookEndpoint,
@@ -67,8 +68,10 @@ class SiteIn(BaseModel):
 
 @router.get("/sites", tags=["site"])
 def list_sites(cu: CurrentUser = Depends(require("kb.manage")), db: Session = Depends(get_db)):
-    return [{"id": str(s.id), "slug": s.slug, "title": s.title, "status": s.status, "lang": s.lang}
-            for s in db.scalars(select(Site).where(Site.deleted_at.is_(None)))]
+    return [
+        {"id": str(s.id), "slug": s.slug, "title": s.title, "status": s.status, "lang": s.lang}
+        for s in db.scalars(select(Site).where(Site.deleted_at.is_(None)))
+    ]
 
 
 @router.post("/sites", tags=["site"])
@@ -99,8 +102,10 @@ def publish_site(sid: uuid.UUID, request: Request, cu: CurrentUser = Depends(req
 @router.get("/sites/{sid}/pages", tags=["site"])
 def site_pages(sid: uuid.UUID, cu: CurrentUser = Depends(require("kb.manage")), db: Session = Depends(get_db)):
     _get(db, Site, sid)
-    return [{"id": str(p.id), "path": p.path, "title": p.title, "page_type": p.page_type}
-            for p in db.scalars(select(SitePage).where(SitePage.site_id == sid, SitePage.deleted_at.is_(None)))]
+    return [
+        {"id": str(p.id), "path": p.path, "title": p.title, "page_type": p.page_type}
+        for p in db.scalars(select(SitePage).where(SitePage.site_id == sid, SitePage.deleted_at.is_(None)))
+    ]
 
 
 @public.get("/s/{slug}/robots.txt")
@@ -123,11 +128,13 @@ def public_site(slug: str, path: str = "", db: Session = Depends(get_db)):
 @router.post("/companies/{cid}/tech-fingerprint", tags=["site"])
 async def tech_fp(cid: uuid.UUID, request: Request, cu: CurrentUser = Depends(require("company.manage")), db: Session = Depends(get_db)):
     from app.models import Company
+
     co = _get(db, Company, cid)
     html = ""
     if co.domain:
         try:
             import httpx
+
             r = httpx.get(f"https://{co.domain}", timeout=6, follow_redirects=True)
             html = r.text[:50000]
             fp = site_mod.fingerprint(html, dict(r.headers))
@@ -160,8 +167,10 @@ def seed_test(body: SeedIn, request: Request, cu: CurrentUser = Depends(require(
 
 @router.get("/seed-tests", tags=["deliverability"])
 def list_seeds(cu: CurrentUser = Depends(require("mailbox.read")), db: Session = Depends(get_db)):
-    return [{"id": str(t.id), "subject": t.subject, "inbox_rate": t.inbox_rate, "status": t.status, "at": t.created_at.isoformat()}
-            for t in db.scalars(select(SeedTest).order_by(SeedTest.created_at.desc()).limit(20))]
+    return [
+        {"id": str(t.id), "subject": t.subject, "inbox_rate": t.inbox_rate, "status": t.status, "at": t.created_at.isoformat()}
+        for t in db.scalars(select(SeedTest).order_by(SeedTest.created_at.desc()).limit(20))
+    ]
 
 
 @router.post("/mailboxes/{mid}/warmup:tick", tags=["deliverability"])
@@ -190,7 +199,9 @@ class OAuthStubIn(BaseModel):
 
 
 @router.post("/mailboxes/oauth/{provider}:complete-stub", tags=["mailboxes"])
-def oauth_stub(provider: str, body: OAuthStubIn, request: Request, cu: CurrentUser = Depends(require("mailbox.manage")), db: Session = Depends(get_db)):
+def oauth_stub(
+    provider: str, body: OAuthStubIn, request: Request, cu: CurrentUser = Depends(require("mailbox.manage")), db: Session = Depends(get_db)
+):
     mb = delivery.oauth_complete_stub(db, provider, body.email, cu.id)
     audit(db, cu, request, "mailbox.oauth_stub", "mailbox", mb.id, {"provider": provider})
     db.commit()
@@ -199,7 +210,9 @@ def oauth_stub(provider: str, body: OAuthStubIn, request: Request, cu: CurrentUs
 
 @router.post("/mailboxes/oauth/{provider}:callback", tags=["mailboxes"])
 def oauth_callback(provider: str):
-    raise AppError("DELIVERY_PROVIDER_UNAVAILABLE", details={"provider": provider, "reason": "OAuth 回调需配置 Client ID 并完成厂商验证后启用"})
+    raise AppError(
+        "DELIVERY_PROVIDER_UNAVAILABLE", details={"provider": provider, "reason": "OAuth 回调需配置 Client ID 并完成厂商验证后启用"}
+    )
 
 
 class VerifyIn(BaseModel):
@@ -221,7 +234,9 @@ class PhoneIn(BaseModel):
 
 @router.post("/phone-tasks", tags=["phone"])
 def phone_create(body: PhoneIn, request: Request, cu: CurrentUser = Depends(require("channel.linkedin")), db: Session = Depends(get_db)):
-    t = social.create_phone_task(db, assignee_id=body.assignee_id or cu.id, phone=body.phone, script=body.script, contact_id=body.contact_id)
+    t = social.create_phone_task(
+        db, assignee_id=body.assignee_id or cu.id, phone=body.phone, script=body.script, contact_id=body.contact_id
+    )
     audit(db, cu, request, "phone.task_create", "phone_task", t.id)
     db.commit()
     return {"id": str(t.id), "status": t.status, "note": "系统不会自动外呼"}
@@ -232,8 +247,10 @@ def phone_list(cu: CurrentUser = Depends(require("channel.linkedin")), db: Sessi
     q = select(PhoneTask).where(PhoneTask.deleted_at.is_(None), PhoneTask.status == "todo")
     if "channel.wa" not in cu.permissions:
         q = q.where(PhoneTask.assignee_id == cu.id)
-    return [{"id": str(t.id), "phone": t.phone, "script": t.script, "status": t.status, "due_at": t.due_at.isoformat() if t.due_at else None}
-            for t in db.scalars(q.limit(100))]
+    return [
+        {"id": str(t.id), "phone": t.phone, "script": t.script, "status": t.status, "due_at": t.due_at.isoformat() if t.due_at else None}
+        for t in db.scalars(q.limit(100))
+    ]
 
 
 class PhoneDone(BaseModel):
@@ -243,7 +260,9 @@ class PhoneDone(BaseModel):
 
 
 @router.post("/phone-tasks/{tid}:complete", tags=["phone"])
-def phone_done(tid: uuid.UUID, body: PhoneDone, request: Request, cu: CurrentUser = Depends(require("channel.linkedin")), db: Session = Depends(get_db)):
+def phone_done(
+    tid: uuid.UUID, body: PhoneDone, request: Request, cu: CurrentUser = Depends(require("channel.linkedin")), db: Session = Depends(get_db)
+):
     t = _get(db, PhoneTask, tid)
     social.complete_phone(db, t, body.status, body.note, body.outcome)
     audit(db, cu, request, "phone.task_complete", "phone_task", t.id, body.model_dump())
@@ -270,8 +289,10 @@ def meta_add(body: MetaIn, request: Request, cu: CurrentUser = Depends(require("
 
 @router.get("/meta/channels", tags=["meta"])
 def meta_list(cu: CurrentUser = Depends(require("channel.wa")), db: Session = Depends(get_db)):
-    return [{"id": str(c.id), "platform": c.platform, "page_name": c.page_name, "status": c.status}
-            for c in db.scalars(select(MetaChannel).where(MetaChannel.deleted_at.is_(None)))]
+    return [
+        {"id": str(c.id), "platform": c.platform, "page_name": c.page_name, "status": c.status}
+        for c in db.scalars(select(MetaChannel).where(MetaChannel.deleted_at.is_(None)))
+    ]
 
 
 class MetaSend(BaseModel):
@@ -306,8 +327,10 @@ def create_key(body: KeyIn, request: Request, cu: CurrentUser = Depends(require(
 
 @router.get("/developer/api-keys", tags=["developer"])
 def list_keys(cu: CurrentUser = Depends(require("org.manage")), db: Session = Depends(get_db)):
-    return [{"id": str(k.id), "name": k.name, "prefix": k.prefix, "scopes": k.scopes, "revoked": bool(k.revoked_at)}
-            for k in db.scalars(select(ApiKey).where(ApiKey.deleted_at.is_(None)))]
+    return [
+        {"id": str(k.id), "name": k.name, "prefix": k.prefix, "scopes": k.scopes, "revoked": bool(k.revoked_at)}
+        for k in db.scalars(select(ApiKey).where(ApiKey.deleted_at.is_(None)))
+    ]
 
 
 @router.delete("/developer/api-keys/{kid}", tags=["developer"])
@@ -334,8 +357,10 @@ def add_wh(body: WhIn, request: Request, cu: CurrentUser = Depends(require("org.
 
 @router.get("/developer/webhooks", tags=["developer"])
 def list_wh(cu: CurrentUser = Depends(require("org.manage")), db: Session = Depends(get_db)):
-    return [{"id": str(w.id), "url": w.url, "events": w.events, "enabled": w.enabled, "fail_count": w.fail_count}
-            for w in db.scalars(select(WebhookEndpoint).where(WebhookEndpoint.deleted_at.is_(None)))]
+    return [
+        {"id": str(w.id), "url": w.url, "events": w.events, "enabled": w.enabled, "fail_count": w.fail_count}
+        for w in db.scalars(select(WebhookEndpoint).where(WebhookEndpoint.deleted_at.is_(None)))
+    ]
 
 
 @router.post("/developer/webhooks/test", tags=["developer"])
@@ -353,11 +378,16 @@ def mcp(cu: CurrentUser = Depends(require("org.manage"))):
 @public.get("/openapi-public.json")
 def openapi_public(request: Request):
     """精简 OpenAPI 子集（公司/询盘/Agent），需 API Key。"""
-    return {"openapi": "3.0.3", "info": {"title": "TradeLeads Public API", "version": "1.0.0"},
-            "paths": {"/api/v1/companies": {"get": {"summary": "List companies", "security": [{"ApiKey": []}]}},
-                      "/api/v1/inquiries": {"get": {"summary": "List inquiries"}},
-                      "/api/v1/agent/tasks": {"post": {"summary": "Create agent task"}}},
-            "components": {"securitySchemes": {"ApiKey": {"type": "apiKey", "in": "header", "name": "X-API-Key"}}}}
+    return {
+        "openapi": "3.0.3",
+        "info": {"title": "TradeLeads Public API", "version": "1.0.0"},
+        "paths": {
+            "/api/v1/companies": {"get": {"summary": "List companies", "security": [{"ApiKey": []}]}},
+            "/api/v1/inquiries": {"get": {"summary": "List inquiries"}},
+            "/api/v1/agent/tasks": {"post": {"summary": "Create agent task"}},
+        },
+        "components": {"securitySchemes": {"ApiKey": {"type": "apiKey", "in": "header", "name": "X-API-Key"}}},
+    }
 
 
 class ImIn(BaseModel):
@@ -378,8 +408,10 @@ def im_add(body: ImIn, request: Request, cu: CurrentUser = Depends(require("org.
 
 @router.get("/im/channels", tags=["im"])
 def im_list(cu: CurrentUser = Depends(require("org.manage")), db: Session = Depends(get_db)):
-    return [{"id": str(c.id), "provider": c.provider, "name": c.name, "status": c.status}
-            for c in db.scalars(select(ImChannel).where(ImChannel.deleted_at.is_(None)))]
+    return [
+        {"id": str(c.id), "provider": c.provider, "name": c.name, "status": c.status}
+        for c in db.scalars(select(ImChannel).where(ImChannel.deleted_at.is_(None)))
+    ]
 
 
 class ImMsgIn(BaseModel):
@@ -399,8 +431,10 @@ def im_in(cid: uuid.UUID, body: ImMsgIn, request: Request, cu: CurrentUser = Dep
 # ---------- 按商机付费 / ERP ----------
 @router.get("/billing/lead-charges", tags=["billing"])
 def lead_charges(cu: CurrentUser = Depends(require("billing.read")), db: Session = Depends(get_db)):
-    return [{"id": str(c.id), "opportunity_id": str(c.opportunity_id), "amount_minor": c.amount_minor, "status": c.status}
-            for c in db.scalars(select(LeadCharge).order_by(LeadCharge.created_at.desc()).limit(100))]
+    return [
+        {"id": str(c.id), "opportunity_id": str(c.opportunity_id), "amount_minor": c.amount_minor, "status": c.status}
+        for c in db.scalars(select(LeadCharge).order_by(LeadCharge.created_at.desc()).limit(100))
+    ]
 
 
 class ErpIn(BaseModel):
@@ -420,12 +454,20 @@ def erp_add(body: ErpIn, request: Request, cu: CurrentUser = Depends(require("or
 
 @router.get("/erp/connections", tags=["erp"])
 def erp_list(cu: CurrentUser = Depends(require("org.manage")), db: Session = Depends(get_db)):
-    return [{"id": str(c.id), "name": c.name, "kind": c.kind, "status": c.status}
-            for c in db.scalars(select(ErpConnection).where(ErpConnection.deleted_at.is_(None)))]
+    return [
+        {"id": str(c.id), "name": c.name, "kind": c.kind, "status": c.status}
+        for c in db.scalars(select(ErpConnection).where(ErpConnection.deleted_at.is_(None)))
+    ]
 
 
 @router.post("/erp/connections/{cid}/export", tags=["erp"])
-def erp_export(cid: uuid.UUID, object_type: str = "account", request: Request = None, cu: CurrentUser = Depends(require("org.manage")), db: Session = Depends(get_db)):
+def erp_export(
+    cid: uuid.UUID,
+    object_type: str = "account",
+    request: Request = None,
+    cu: CurrentUser = Depends(require("org.manage")),
+    db: Session = Depends(get_db),
+):
     conn = _get(db, ErpConnection, cid)
     job = plat_mod.erp_export_csv(db, conn, object_type, cu.id)
     audit(db, cu, request, "erp.export", "erp_job", job.id, {"rows": job.rows})
@@ -434,8 +476,14 @@ def erp_export(cid: uuid.UUID, object_type: str = "account", request: Request = 
 
 
 @router.post("/erp/connections/{cid}/import", tags=["erp"])
-async def erp_import(cid: uuid.UUID, object_type: str = "product", file: UploadFile = File(...), request: Request = None,
-                     cu: CurrentUser = Depends(require("org.manage")), db: Session = Depends(get_db)):
+async def erp_import(
+    cid: uuid.UUID,
+    object_type: str = "product",
+    file: UploadFile = File(...),
+    request: Request = None,
+    cu: CurrentUser = Depends(require("org.manage")),
+    db: Session = Depends(get_db),
+):
     conn = _get(db, ErpConnection, cid)
     text = (await file.read()).decode("utf-8-sig", "replace")
     job = plat_mod.erp_import_csv(db, conn, object_type, text, cu.id)
@@ -481,8 +529,10 @@ def feedback(body: FbIn, request: Request, cu: CurrentUser = Depends(get_current
 
 @router.get("/feedback", tags=["success"])
 def feedback_list(cu: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    return [{"id": str(f.id), "title": f.title, "kind": f.kind, "status": f.status, "votes": f.votes}
-            for f in db.scalars(select(FeedbackItem).order_by(FeedbackItem.created_at.desc()).limit(50))]
+    return [
+        {"id": str(f.id), "title": f.title, "kind": f.kind, "status": f.status, "votes": f.votes}
+        for f in db.scalars(select(FeedbackItem).order_by(FeedbackItem.created_at.desc()).limit(50))
+    ]
 
 
 @router.get("/subprocessors", tags=["success"])
@@ -496,8 +546,12 @@ def subprocessors(db: Session = Depends(get_db), cu: CurrentUser = Depends(get_c
 
 @plat.post("/subprocessors/notices")
 def sub_notice(body: dict, db: Session = Depends(get_db)):
-    n = SubprocessorNotice(subprocessor_id=uuid.UUID(body["subprocessor_id"]) if body.get("subprocessor_id") else uuid.uuid4(),
-                           change=body.get("change", "added"), detail=body.get("detail", ""), effective_on=date.fromisoformat(body.get("effective_on", str(date.today()))))
+    n = SubprocessorNotice(
+        subprocessor_id=uuid.UUID(body["subprocessor_id"]) if body.get("subprocessor_id") else uuid.uuid4(),
+        change=body.get("change", "added"),
+        detail=body.get("detail", ""),
+        effective_on=date.fromisoformat(body.get("effective_on", str(date.today()))),
+    )
     db.add(n)
     db.flush()
     cnt = plat_mod.notify_subprocessor_change(db, n)
@@ -508,8 +562,9 @@ def sub_notice(body: dict, db: Session = Depends(get_db)):
 @plat.post("/sla:credit")
 def sla_run(period: str | None = None, db: Session = Depends(get_db)):
     # run per tenant
-    from app.models import Tenant
     from app.core.db import tenant_context
+    from app.models import Tenant
+
     out = {}
     with bypass_tenant():
         tids = [t.id for t in db.scalars(select(Tenant).where(Tenant.status == "active"))]
@@ -528,9 +583,14 @@ def init_seeds(db: Session = Depends(get_db)):
 
 # suppressions / products import quick
 @router.post("/suppressions:import", tags=["compliance"])
-async def import_supp(file: UploadFile = File(...), request: Request = None, cu: CurrentUser = Depends(require("compliance.manage")),
-                      db: Session = Depends(get_db)):
+async def import_supp(
+    file: UploadFile = File(...),
+    request: Request = None,
+    cu: CurrentUser = Depends(require("compliance.manage")),
+    db: Session = Depends(get_db),
+):
     from app.compliance.suppression import add_suppression
+
     text = (await file.read()).decode("utf-8-sig", "replace")
     n = 0
     for line in text.splitlines():
@@ -544,3 +604,42 @@ async def import_supp(file: UploadFile = File(...), request: Request = None, cu:
 
 
 _ = (Header, Query, hashlib, ImMessage, LeadCharge, MetaMessage, Plan, SlaCredit, WebhookDelivery, date)
+
+
+# ---------- 公开 API（X-API-Key 鉴权） ----------
+def api_key_auth(scope: str):
+    def dep(x_api_key: str | None = Header(None), db: Session = Depends(get_db)) -> ApiKey:
+        from app.core.context import tenant_id_var
+
+        k = plat_mod.verify_api_key(db, x_api_key or "")
+        if not k:
+            raise AppError("AUTH_API_KEY_INVALID")
+        if scope not in (k.scopes or []):
+            raise AppError("COMMON_FORBIDDEN", details={"scope": scope})
+        tenant_id_var.set(k.tenant_id)
+        db.info["tenant_id"] = k.tenant_id
+        k.last_used_at = utcnow()
+        db.flush()
+        return k
+
+    return dep
+
+
+@public.get("/api/v1/open/companies", tags=["open-api"])
+def open_companies(q: str | None = Query(None), k: ApiKey = Depends(api_key_auth("read")), db: Session = Depends(get_db)):
+    from app.models import Company
+
+    stmt = select(Company).where(Company.deleted_at.is_(None))
+    if q:
+        stmt = stmt.where(Company.name.ilike(f"%{q}%"))
+    rows = [{"id": str(c.id), "name": c.name, "domain": c.domain, "country": c.country} for c in db.scalars(stmt.limit(100))]
+    db.commit()
+    return {"items": rows}
+
+
+@public.post("/api/v1/open/feedback", tags=["open-api"])
+def open_feedback(body: FbIn, k: ApiKey = Depends(api_key_auth("write")), db: Session = Depends(get_db)):
+    f = FeedbackItem(**body.model_dump(), created_by=k.created_by)
+    db.add(f)
+    db.commit()
+    return {"id": str(f.id)}

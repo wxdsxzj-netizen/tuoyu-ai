@@ -144,12 +144,8 @@ def accept(db: Session, h: Handoff, user) -> Opportunity:
     db.flush()
     from app.b5.agentx import fire
     fire(db, "handoff.accepted", {"company": acc.name, "domain": acc.domain, "country": acc.country, "email": contact.email if contact else None})  # noqa: E501
-    try:
-        from app.b8.platform import charge_qualified_lead, emit_webhook
-        charge_qualified_lead(db, opp)
-        emit_webhook(db, "handoff.accepted", {"opportunity_id": str(opp.id), "account": acc.name})
-    except Exception:  # noqa: BLE001
-        pass
+    from app.b8.platform import after_qualified_event
+    after_qualified_event(db, opp, "handoff.accepted", {"opportunity_id": str(opp.id), "account": acc.name})
     return opp
 
 

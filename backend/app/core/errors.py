@@ -29,6 +29,7 @@ ERROR_CODES: dict[str, tuple[int, str, str, bool]] = {
     "AUTH_MFA_REQUIRED": (401, "需要输入双因素验证码", "MFA code required", False),
     "AUTH_MFA_INVALID": (401, "验证码错误或已过期", "Invalid MFA code", False),
     "AUTH_SESSION_REVOKED": (401, "会话已失效，请重新登录", "Session revoked", False),
+    "AUTH_API_KEY_INVALID": (401, "API Key 无效或已吊销", "Invalid or revoked API key", False),
     "ORG_INVITE_INVALID": (410, "邀请链接无效或已过期", "Invitation invalid or expired", False),
     "ORG_DEPT_DEPTH": (422, "部门层级最多 6 级", "Department depth exceeds 6", False),
     "ORG_HANDOVER_TARGET": (422, "交接对象必须是在职成员", "Handover target must be an active member", False),
