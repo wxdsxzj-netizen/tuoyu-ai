@@ -463,7 +463,7 @@ def poll(mid: uuid.UUID, cu: CurrentUser = Depends(require("mailbox.manage")), d
 class StepIn(BaseModel):
     step_no: int = Field(ge=1, le=15)
     wait_days: int = Field(0, ge=0, le=60)
-    mode: str = Field("ai", pattern="^(ai|template)$")
+    mode: str = Field("ai", pattern="^(ai|template|linkedin|whatsapp)$")
     subject_tpl: str | None = Field(None, max_length=256)
     body_tpl: str | None = Field(None, max_length=10000)
     instructions: str | None = Field(None, max_length=2000)

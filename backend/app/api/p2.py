@@ -331,6 +331,8 @@ class SettingsIn(BaseModel):
     postal_address: str | None = Field(None, max_length=1000)
     privacy_email: str | None = Field(None, max_length=254)
     footer_language: str = Field("en", pattern="^(en|zh)$")
+    ai_disclose: bool = False  # B6：全量 AI 披露，默认关
+    ai_disclose_eu: bool = True  # 欧盟/EEA/UK 收件人覆盖，默认开
 
 
 def _settings(db) -> TenantCompliance | None:
@@ -364,7 +366,9 @@ def footer_preview(contact_id: uuid.UUID, cu: CurrentUser = Depends(require("com
     s = _settings(db)
     country, _ = region_mod.resolve_country(c.country, c.company.country if c.company else None, c.email)
     link = unsubscribe_url(cu.tenant_id, c.email, c.id) if c.email else ""
-    return build_footer(s, unsubscribe_link=link, lang=s.footer_language if s else "en", gdpr=country in region_mod.LIA_COUNTRIES)
+    gdpr = country in region_mod.LIA_COUNTRIES
+    ai = bool(s and (s.ai_disclose or (gdpr and s.ai_disclose_eu)))
+    return build_footer(s, unsubscribe_link=link, lang=s.footer_language if s else "en", gdpr=gdpr, ai_assisted=ai)
 
 
 # =============== LIA / 同意记录 ===============

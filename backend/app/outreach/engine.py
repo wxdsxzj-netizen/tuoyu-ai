@@ -213,6 +213,29 @@ def process_enrollment(db: Session, e: Enrollment, now: datetime, rng: random.Ra
     if seq.daily_cap and b3.sent_today(db, seq, now) >= seq.daily_cap:  # B3 序列级每日上限
         _defer(db, e, now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1, hours=1), "SEQ_DAILY_CAP")
         return "daily_cap"
+    if step.mode == "linkedin":  # B6：只创建人工任务，绝不自动发 LinkedIn
+        from app.b6 import channels as ch
+        url = contact.linkedin_url or ""
+        if not url:
+            event(db, e, "skipped", "NO_LINKEDIN_URL", step_no=step.step_no)
+            nxt = next((x for x in steps if x.step_no > step.step_no), None)
+            e.current_step = nxt.step_no if nxt else step.step_no + 1
+            e.next_run_at = now
+            return "linkedin_skip"
+        ch.create_linkedin_task(db, assignee_id=seq.owner_id, profile_url=url, kind="message",
+                                draft_text=step.instructions or step.body_tpl, contact_id=contact.id,
+                                sequence_id=seq.id, enrollment_id=e.id)
+        event(db, e, "linkedin_task", "CREATED", step_no=step.step_no)
+        nxt = next((x for x in steps if x.step_no > step.step_no), None)
+        e.current_step = nxt.step_no if nxt else step.step_no + 1
+        e.next_run_at = now + timedelta(days=step.wait_days or 1)
+        return "linkedin_task"
+    if step.mode == "whatsapp":
+        event(db, e, "skipped", "WA_STEP_USE_DESK", step_no=step.step_no)  # WhatsApp 走渠道工作台，不在序列里静默外发
+        nxt = next((x for x in steps if x.step_no > step.step_no), None)
+        e.current_step = nxt.step_no if nxt else step.step_no + 1
+        e.next_run_at = now
+        return "whatsapp_desk"
     try:
         draft = ensure_draft(db, e, seq, step)
     except AppError as ex:
@@ -265,7 +288,7 @@ def _send(db, e, seq, step, draft, contact, mb, now, rng, steps) -> str:
         msg["References"] = e.thread_message_id
     for k, v in list_unsubscribe_headers(e.tenant_id, contact.email, contact.id).items():
         msg[k] = v
-    footer = writer.footer_for(db, unsubscribe_url(e.tenant_id, contact.email, contact.id), (country_of(contact) or "") in LIA_COUNTRIES)
+    footer = writer.footer_for(db, unsubscribe_url(e.tenant_id, contact.email, contact.id), (country_of(contact) or "") in LIA_COUNTRIES, ai_assisted=bool(draft.prompt_version and draft.prompt_version != "template"))  # noqa: E501
     if footer["missing"]:
         event(db, e, "gate_blocked", "FOOTER_MISSING")
         e.next_run_at = now + timedelta(hours=1)

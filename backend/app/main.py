@@ -19,6 +19,8 @@ from app.api.b4 import public as b4_public
 from app.api.b4 import router as b4_router
 from app.api.b5 import plat as b5_plat
 from app.api.b5 import router as b5_router
+from app.api.b6 import plat as b6_plat
+from app.api.b6 import router as b6_router
 from app.api.billing import router as billing_router
 from app.api.p1 import router as p1_router
 from app.api.p2 import public as p2_public
@@ -120,6 +122,8 @@ app.include_router(b4_public)
 app.include_router(b4_plat)
 app.include_router(b5_router)
 app.include_router(b5_plat)
+app.include_router(b6_router)
+app.include_router(b6_plat)
 app.include_router(b1_public)
 app.include_router(billing_router)
 app.include_router(p5_router)

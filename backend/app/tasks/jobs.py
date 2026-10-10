@@ -422,3 +422,28 @@ def b5_hourly_task():
     """每小时：定时触发的 Agent 任务（只创建任务，执行仍走审批门）。"""
     from app.b5.agentx import tick_all
     return tick_all()
+
+
+@celery_app.task(name="b6.daily")
+def b6_daily_task():
+    """每日：生成海关衍生信号并扇出订阅；联系人变动检测；自定义报表站内订阅。"""
+    from app.b6 import reports_tick, signals  # noqa: I001
+    from app.b6.hub import detect_contact_changes
+    from app.core.db import SessionLocal, bypass_tenant, tenant_context
+    from app.models import Tenant
+    from sqlalchemy import select
+
+    sig = signals.daily()
+    db = SessionLocal()
+    changes = {}
+    try:
+        with bypass_tenant():
+            tids = [t.id for t in db.scalars(select(Tenant).where(Tenant.status == "active"))]
+        for tid in tids:
+            with tenant_context(tid):
+                db.info["tenant_id"] = tid
+                changes[str(tid)] = detect_contact_changes(db)
+                db.commit()
+    finally:
+        db.close()
+    return {"signals": sig, "contact_changes": changes, "reports": reports_tick.tick_all()}

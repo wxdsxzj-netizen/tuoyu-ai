@@ -64,6 +64,10 @@ class Settings(BaseSettings):
 
     # 联系人数据源：auto（有 Hunter Key 用 hunter，否则 mock）| mock | apollo | hunter | snov
     contact_provider: str = "auto"
+    customs_provider: str = "mock"  # mock | auto | importgenius
+    customs_api_key: str = Field("", validation_alias=AliasChoices("TL_CUSTOMS_API_KEY", "CUSTOMS_API_KEY"))
+    whatsapp_token: str = Field("", validation_alias=AliasChoices("TL_WHATSAPP_TOKEN", "WHATSAPP_TOKEN"))
+    whatsapp_phone_number_id: str = Field("", validation_alias=AliasChoices("TL_WHATSAPP_PHONE_NUMBER_ID"))
     apollo_api_key: str = ""
     hunter_api_key: str = Field("", validation_alias=AliasChoices("TL_HUNTER_API_KEY", "HUNTER_API_KEY"))
     hunter_base_url: str = "https://api.hunter.io/v2"

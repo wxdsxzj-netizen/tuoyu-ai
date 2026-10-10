@@ -1,10 +1,10 @@
-import uuid
+import uuid  # noqa: I001
 from datetime import date, datetime
 
 from sqlalchemy import BigInteger, Boolean, Column, Date, DateTime, ForeignKey, String, Table, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.sql.expression import false as sa_false
+from sqlalchemy.sql.expression import false as sa_false, true as sa_true
 
 from app.core.db import Base, TenantOwned, TenantScoped, TimestampMixin, utcnow
 from app.core.enc import EncryptedJSON, EncryptedString
@@ -193,6 +193,8 @@ class Company(TenantScoped, Base):
     contact_count: Mapped[int] = mapped_column(Integer, default=0)
     sanction_status: Mapped[str] = mapped_column(String(16), default="unscreened")  # unscreened / clear / pending / confirmed
     sanction_screened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    field_meta: Mapped[dict] = mapped_column(JSONB, default=dict)  # B6 逐字段血缘 {field:{source,confidence,fetched_at,expires_at}}
+    global_gid: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # 关联公共库
 
 
 class Contact(TenantScoped, Base):
@@ -216,6 +218,8 @@ class Contact(TenantScoped, Base):
     language: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source: Mapped[str] = mapped_column(String(32), default="manual")
     source_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    field_meta: Mapped[dict] = mapped_column(JSONB, default=dict)  # B6 逐字段血缘
+    global_gid: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     email_reason_codes: Mapped[list[str]] = mapped_column(ARRAY(String(32)), default=list)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_role_email: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -343,6 +347,8 @@ class TenantCompliance(TenantScoped, Base):
     privacy_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
     footer_language: Mapped[str] = mapped_column(String(8), default="en")
     l2_auto_approve: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_false())  # 试点默认关闭
+    ai_disclose: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_false())  # B6：对外邮件 AI 披露，默认关
+    ai_disclose_eu: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa_true())  # 欧盟/EEA/UK 收件人覆盖，默认开
     bank_info: Mapped[dict | None] = mapped_column(EncryptedJSON, nullable=True)  # 收款银行（PI 用）；B4 字段级加密
     quote_margin_manager: Mapped[float] = mapped_column(Float, default=15.0, server_default="15")  # BR-10-06 默认值，可按租户配置
     quote_margin_owner: Mapped[float] = mapped_column(Float, default=8.0, server_default="8")
@@ -1569,3 +1575,208 @@ class EvalRun(TimestampMixin, Base):
     threshold: Mapped[float] = mapped_column(Float)
     ok: Mapped[bool] = mapped_column(Boolean)
     failures: Mapped[list] = mapped_column(JSONB, default=list)
+
+
+# ======================= B6：共享数据中枢 / 海关 / 渠道适配器 =======================
+class GlobalCompany(TimestampMixin, Base):
+    """平台级公司实体（共享数据中枢）。租户通过解锁可见敏感字段。"""
+    __tablename__ = "global_companies"
+    __table_args__ = (UniqueConstraint("domain", name="uq_global_company_domain"),)
+    gid: Mapped[str] = mapped_column(String(32), unique=True, index=True)  # 全局 ID，如 gc_…
+    name: Mapped[str] = mapped_column(String(256))
+    name_normalized: Mapped[str] = mapped_column(String(256), index=True)
+    domain: Mapped[str | None] = mapped_column(String(253), nullable=True, index=True)
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True, index=True)
+    city: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    industry: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    employee_range: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hs_codes: Mapped[list] = mapped_column(JSONB, default=list)
+    provenance: Mapped[dict] = mapped_column(JSONB, default=dict)  # {field: {source, confidence, fetched_at, expires_at}}
+    freshness: Mapped[str] = mapped_column(String(12), default="fresh")  # fresh / aging / stale
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    unlock_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class GlobalContact(TimestampMixin, Base):
+    __tablename__ = "global_contacts"
+    gid: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    company_gid: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(128))
+    title: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    seniority: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(254), nullable=True, index=True)
+    email_status: Mapped[str] = mapped_column(String(16), default="unknown")
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    linkedin_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    provenance: Mapped[dict] = mapped_column(JSONB, default=dict)
+    freshness: Mapped[str] = mapped_column(String(12), default="fresh")
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    unlock_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class HubUnlock(TenantScoped, Base):
+    """租户解锁公共库实体（扣点数）。"""
+    __tablename__ = "hub_unlocks"
+    __table_args__ = (UniqueConstraint("tenant_id", "entity_type", "entity_gid", name="uq_hub_unlock"),)
+    entity_type: Mapped[str] = mapped_column(String(16))  # company / contact
+    entity_gid: Mapped[str] = mapped_column(String(32), index=True)
+    credits: Mapped[float] = mapped_column(Float, default=0)
+    local_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)  # 同步到的租户内 ID
+
+
+class DataCorrection(TenantScoped, Base):
+    """数据纠错回流（E2E-12）。"""
+    __tablename__ = "data_corrections"
+    entity_type: Mapped[str] = mapped_column(String(16))
+    entity_gid: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    local_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    field: Mapped[str] = mapped_column(String(64))
+    old_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_value: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending / accepted / rejected
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class CustomsShipment(TimestampMixin, Base):
+    """海关/提单记录（平台级；真实源经适配器，默认 mock）。"""
+    __tablename__ = "customs_shipments"
+    provider: Mapped[str] = mapped_column(String(32), default="mock")
+    bl_no: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    hs_code: Mapped[str | None] = mapped_column(String(12), nullable=True, index=True)
+    product: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    importer_name: Mapped[str] = mapped_column(String(256), index=True)
+    importer_domain: Mapped[str | None] = mapped_column(String(253), nullable=True, index=True)
+    importer_country: Mapped[str | None] = mapped_column(String(2), nullable=True, index=True)
+    exporter_name: Mapped[str] = mapped_column(String(256), index=True)
+    exporter_domain: Mapped[str | None] = mapped_column(String(253), nullable=True, index=True)
+    exporter_country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    value_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ship_date: Mapped[date] = mapped_column(Date, index=True)
+    origin_port: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dest_port: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    raw: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class BusinessSignal(TimestampMixin, Base):
+    """业务信号（采购窗口、供应商切换、扩招、负面新闻等）。"""
+    __tablename__ = "business_signals"
+    company_gid: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    company_domain: Mapped[str | None] = mapped_column(String(253), nullable=True, index=True)
+    company_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)  # buy_window / supplier_switch / hiring / news / exhibition / tender
+    title: Mapped[str] = mapped_column(String(300))
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+    score: Mapped[float] = mapped_column(Float, default=0.5)
+    source: Mapped[str] = mapped_column(String(32), default="mock")
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SignalSubscription(TenantScoped, Base):
+    __tablename__ = "signal_subscriptions"
+    name: Mapped[str] = mapped_column(String(100))
+    kinds: Mapped[list] = mapped_column(JSONB, default=list)
+    countries: Mapped[list] = mapped_column(JSONB, default=list)
+    hs_codes: Mapped[list] = mapped_column(JSONB, default=list)
+    industries: Mapped[list] = mapped_column(JSONB, default=list)
+    keywords: Mapped[list] = mapped_column(JSONB, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ContactChange(TenantScoped, Base):
+    """联系人变动检测（职位/邮箱/离职迹象）。"""
+    __tablename__ = "contact_changes"
+    contact_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    kind: Mapped[str] = mapped_column(String(24))  # title_change / email_bounce / left / new_role
+    before: Mapped[str | None] = mapped_column(Text, nullable=True)
+    after: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(32), default="system")
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open / acknowledged
+
+
+class WhatsAppAccount(TenantScoped, Base):
+    """WhatsApp Business Cloud API 绑定（无 Meta 凭据时走 mock）。"""
+    __tablename__ = "whatsapp_accounts"
+    phone_number_id: Mapped[str] = mapped_column(String(64))
+    display_phone: Mapped[str] = mapped_column(String(32))
+    waba_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    access_token: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="mock")  # mock / active / paused
+    daily_limit: Mapped[int] = mapped_column(Integer, default=50)
+    sent_today: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class WhatsAppTemplate(TenantScoped, Base):
+    __tablename__ = "whatsapp_templates"
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    language: Mapped[str] = mapped_column(String(8), default="en")
+    category: Mapped[str] = mapped_column(String(32), default="marketing")
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="approved")  # draft / pending / approved / rejected
+    meta_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class WhatsAppOptIn(TenantScoped, Base):
+    __tablename__ = "whatsapp_optins"
+    __table_args__ = (UniqueConstraint("tenant_id", "phone", name="uq_wa_optin_phone"),)
+    phone: Mapped[str] = mapped_column(String(32), index=True)
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), default="manual")  # manual / form / import
+    consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WhatsAppMessage(TenantScoped, Base):
+    __tablename__ = "whatsapp_messages"
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    phone: Mapped[str] = mapped_column(String(32), index=True)
+    direction: Mapped[str] = mapped_column(String(3))  # in / out
+    kind: Mapped[str] = mapped_column(String(16), default="template")  # template / session
+    template_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="queued")  # queued / sent / delivered / read / failed / mock_sent
+    provider_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    window_open_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class LinkedInTask(TenantScoped, Base):
+    """LinkedIn 人工辅助任务（绝不自动私信）。"""
+    __tablename__ = "linkedin_tasks"
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    assignee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    kind: Mapped[str] = mapped_column(String(24))  # connect / message / view / endorse
+    profile_url: Mapped[str] = mapped_column(String(512))
+    draft_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="todo")  # todo / done / skipped / expired
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    sequence_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class AlibabaLead(TenantScoped, Base):
+    """阿里国际站询盘导入。"""
+    __tablename__ = "alibaba_leads"
+    external_id: Mapped[str] = mapped_column(String(64), index=True)
+    buyer_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    buyer_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    buyer_country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    company: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    product: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw: Mapped[dict] = mapped_column(JSONB, default=dict)
+    inquiry_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="imported")  # imported / linked / ignored

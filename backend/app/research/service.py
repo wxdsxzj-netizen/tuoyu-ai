@@ -109,6 +109,23 @@ def generate(db: Session, company: Company, *, user_id=None, force=False, task_i
     if company.is_won_customer:
         fact("purchases", "曾为本公司成交客户" + (f"（成交额约 {company.won_amount_usd} USD）" if company.won_amount_usd else ""),
              add("db", "成交客户记录", f"won_at={company.won_at}"))
+    # 1b) B6 海关/提单（mock 或真实适配器）
+    if company.domain:
+        try:
+            from app.b6 import customs as cu
+            sc = cu.supply_chain(db, company.domain)
+            if sc["suppliers"] or sc["customers"]:
+                e = add("customs", "海关/提单数据", f"供应商 {len(sc['suppliers'])} / 客户 {len(sc['customers'])}")
+                for srow in sc["suppliers"][:5]:
+                    fact("suppliers", f"{srow['name']} · {srow['shipments']} 票 · ${srow['value_usd']:,.0f}", e)
+                for srow in sc["customers"][:5]:
+                    fact("purchases", f"作为出口商向 {srow['name']} 发运 {srow['shipments']} 票 · ${srow['value_usd']:,.0f}", e)
+            cyc = cu.buy_cycle(db, company.domain)
+            if cyc.get("median_days"):
+                e = add("customs", "采购周期", f"中位间隔 {cyc['median_days']} 天")
+                fact("purchases", f"采购周期约 {cyc['median_days']} 天，下次窗口 {cyc.get('next_window') or '—'}", e)
+        except Exception:  # noqa: BLE001
+            pass
     # 2) 官网（robots.txt 遵守）
     pages, skipped, web_err = _web(company)
     for p in pages:

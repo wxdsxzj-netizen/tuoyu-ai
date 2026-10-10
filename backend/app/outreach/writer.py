@@ -128,9 +128,12 @@ def _icp_text(seq) -> str:
     return _icp_cache.get(seq.id, "")
 
 
-def footer_for(db: Session, unsubscribe_link: str, gdpr: bool) -> dict:
+def footer_for(db: Session, unsubscribe_link: str, gdpr: bool, *, ai_assisted: bool = False) -> dict:
     tc = db.scalar(select(TenantCompliance).limit(1))
-    return build_footer(tc, unsubscribe_link=unsubscribe_link, lang=tc.footer_language if tc else "en", gdpr=gdpr)
+    disclose = False
+    if tc and ai_assisted:
+        disclose = bool(tc.ai_disclose) or (gdpr and bool(getattr(tc, "ai_disclose_eu", True)))
+    return build_footer(tc, unsubscribe_link=unsubscribe_link, lang=tc.footer_language if tc else "en", gdpr=gdpr, ai_assisted=disclose)
 
 
 def write(db: Session, *, seq: Sequence, step: SequenceStep, contact: Contact, sender: str, gdpr: bool) -> dict:
@@ -158,7 +161,7 @@ def write(db: Session, *, seq: Sequence, step: SequenceStep, contact: Contact, s
             kb = {**kb, "text": kb["text"] + f"\n[knowledge in {lang}]\n" + tr[:3000]}
     style = b5ai.style_hint(db, seq.owner_id)  # B5 M1-08 风格指纹
     kb_ver = b5ai.version_for_write(db)  # B5 M1-12 / M7-14 内容快照绑定知识版本
-    footer = footer_for(db, "https://unsubscribe.example/preview", gdpr)
+    footer = footer_for(db, "https://unsubscribe.example/preview", gdpr, ai_assisted=step.mode == "ai")
     has_fact = bool(company and (company.industry or company.name))
     personalization = "medium" if has_fact else "degraded"
     rewrites, feedback, draft = 0, None, None

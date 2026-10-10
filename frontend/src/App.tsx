@@ -38,6 +38,7 @@ import WidgetsPage from './pages/Widgets'
 import SupportPage from './pages/Support'
 import BillingPlusPage from './pages/BillingPlus'
 import AiLabPage from './pages/AiLab'
+import DataHubPage from './pages/DataHub'
 import WidgetEmbedPage from './pages/WidgetEmbed'
 import StatusPage from './pages/Status'
 import TodayPage from './pages/Today'
@@ -69,6 +70,7 @@ function Shell() {
     can('sequence.read') && { key: '/outreach-tools', icon: <FileSearchOutlined />, label: t('menu.outreachTools') },
     can('inbox.read') && { key: '/widgets', icon: <MessageOutlined />, label: t('menu.widgets') },
     { key: '/ai-lab', icon: <BankOutlined />, label: t('menu.aiLab') },
+    can('hub.read') && { key: '/data-hub', icon: <BankOutlined />, label: t('menu.dataHub') },
     can('billing.read') && { key: '/billing-plus', icon: <BankOutlined />, label: t('menu.billingPlus') },
     { key: '/support', icon: <BookOutlined />, label: t('menu.support') },
     can('analytics.read') && { key: '/insights', icon: <FileSearchOutlined />, label: t('menu.insights') },
@@ -127,6 +129,7 @@ function Shell() {
             <Route path="/support" element={<SupportPage />} />
             <Route path="/billing-plus" element={<BillingPlusPage />} />
             <Route path="/ai-lab" element={<AiLabPage />} />
+            <Route path="/data-hub" element={<DataHubPage />} />
             <Route path="/billing" element={<BillingPage />} />
             <Route path="/today" element={<TodayPage />} />
             <Route path="/approvals-center" element={<ApprovalCenterPage />} />

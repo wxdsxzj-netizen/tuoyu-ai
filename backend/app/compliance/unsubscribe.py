@@ -55,8 +55,9 @@ def list_unsubscribe_headers(tenant_id, email, contact_id=None) -> dict:
             "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"}
 
 
-def build_footer(settings_row, *, unsubscribe_link: str, lang: str = "en", gdpr: bool = False) -> dict:
-    """CAN-SPAM / GDPR / CASL 必备页脚：发件人身份、实体地址、退订方式（+ 欧盟/英国的数据来源与权利说明）。"""
+def build_footer(settings_row, *, unsubscribe_link: str, lang: str = "en", gdpr: bool = False, ai_assisted: bool = False) -> dict:
+    """CAN-SPAM / GDPR / CASL 必备页脚：发件人身份、实体地址、退订方式（+ 欧盟/英国的数据来源与权利说明）。
+    B6：ai_assisted 时追加 AI 披露（租户总开关默认关；欧盟/EEA/UK 收件人可单独覆盖默认开）。"""
     missing = [k for k, v in (("identity", settings_row and settings_row.sender_legal_name),
                               ("address", settings_row and settings_row.postal_address)) if not v]
     name = (settings_row.sender_legal_name if settings_row else None) or ""
@@ -67,11 +68,15 @@ def build_footer(settings_row, *, unsubscribe_link: str, lang: str = "en", gdpr:
         if gdpr:
             lines.append("我们基于正当利益联系您；您的公开商务联系方式来源于公开渠道。您可随时行使访问、更正、删除与反对的权利"
                          + (f"，联系 {priv}" if priv else "") + "。")
+        if ai_assisted:
+            lines.append("本邮件部分内容由人工智能辅助生成，最终由人工审阅后发送。")
     else:
         lines = [f"Sent by {name}", addr, f"Don't want these emails? Unsubscribe: {unsubscribe_link}"]
         if gdpr:
             lines.append("We contact you on the basis of legitimate interest; your business contact details were obtained from "
                          "public sources. You may access, correct, delete or object to processing at any time"
                          + (f" by writing to {priv}" if priv else "") + ".")
+        if ai_assisted:
+            lines.append("Parts of this email were drafted with AI assistance and reviewed by a human before sending.")
     text = "\n".join(x for x in lines if x)
-    return {"text": text, "missing": missing}
+    return {"text": text, "missing": missing, "ai_disclosed": ai_assisted}
