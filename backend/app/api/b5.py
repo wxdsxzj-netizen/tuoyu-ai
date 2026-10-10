@@ -212,7 +212,7 @@ async def from_attachment(request: Request, file: UploadFile = File(...), accoun
     _kind, text = extract_text(file.filename or "x.txt", raw)
     r = docs.parse_lines(db, text)
     r["quote_id"] = None
-    audit(db, cu, request, "quote.attachment_parse", after={"file": file.filename, "items": len(r["items"]), "injection": bool(r["injection"])})
+    audit(db, cu, request, "quote.attachment_parse", after={"file": file.filename, "items": len(r["items"]), "injection": bool(r["injection"])})  # noqa: E501
     if create and r["items"]:
         if not account_id:
             raise AppError("COMMON_VALIDATION", details={"account_id": "生成报价草稿需选择客户"})
