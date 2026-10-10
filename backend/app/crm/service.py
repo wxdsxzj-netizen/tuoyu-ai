@@ -67,12 +67,17 @@ def change_stage(db: Session, opp: Opportunity, stage: str, lost_reason: str | N
         if lost_reason not in LOST_REASONS:
             raise AppError("CRM_LOST_REASON_REQUIRED")
         opp.lost_reason, opp.closed_at = lost_reason, utcnow()
+    if stage != "lost" and opp.stage != "lost":
+        from app.crm.b2 import check_stage
+        check_stage(db, opp, stage)  # M10-20：阶段停用 / 必填字段
     removed = 0
     if stage == "won":
         opp.closed_at = utcnow()
         acc = db.get(Account, opp.account_id)
         acc.stage = "customer"
         acc.grade = "A" if opp.amount_minor >= 5_000_000 else "B"
+        from app.crm.b2 import repurchase_task
+        repurchase_task(db, opp)  # M10-34
         ids = [c.id for c in db.scalars(select(Contact).where(Contact.account_id == acc.id))]
         for e in db.scalars(select(Enrollment).where(Enrollment.contact_id.in_(ids), Enrollment.status.in_(("active", "paused", "pending_approval")))) if ids else []:  # noqa: E501
             e.status, e.ended_reason, e.next_run_at = "removed", "opportunity_won", None  # BR-10-14
@@ -182,6 +187,11 @@ def submit(db: Session, q: Quote, user) -> Quote:
     if not q.items:
         raise AppError("COMMON_VALIDATION", details={"items": "至少一行"})
     level, reasons = approval_need(q, thresholds(db))
+    from app.crm.b2 import below_floor, lock_rate
+    lock_rate(db, q)  # M10-30：提交时锁定汇率
+    floor = below_floor(db, q)  # M10-31：低于底价需经理审批
+    if floor:
+        level, reasons = level or "manager", reasons + floor
     q.submitted_by = user.id
     if level:
         q.status, q.approval_level, q.approval_reasons = "pending_approval", level, reasons
@@ -198,6 +208,8 @@ def review(db: Session, q: Quote, user, approve: bool, note: str | None) -> Quot
     if q.status != "pending_approval":
         raise AppError("COMMON_INVALID_STATE")
     perms = user.role.permission_codes
+    from app.org.legacy_approvals import gate
+    gate(db, "quote", user, q.submitted_by)
     if q.approval_level == "owner" and "billing.manage" not in perms:
         raise AppError("COMMON_FORBIDDEN")
     if q.submitted_by == user.id and "billing.manage" not in perms:

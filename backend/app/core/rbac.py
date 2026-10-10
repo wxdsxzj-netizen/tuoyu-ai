@@ -45,6 +45,11 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "org.manage": ("管理部门、邀请、离职交接、审批策略", "Manage org, invitations, handover, approval policies"),
     "security.manage": ("安全设置：会话管理、支持访问授权、审计导出", "Security: sessions, support access, audit export"),
     "data.export": ("全量数据导出", "Full data export"),
+    "product.read": ("查看产品库", "View products"),
+    "product.manage": ("管理产品库、卖点、异议库、承诺边界", "Manage products & KB boundaries"),
+    "price.floor": ("查看成本价与底价", "See cost & floor prices"),
+    "crm.admin": ("CRM 配置：分级规则、阶段、自定义字段、合并拆分、导入撤销", "CRM admin"),
+    "order.manage": ("管理样品、订单与回款", "Manage samples, orders & payments"),
 }
 
 SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {
@@ -55,5 +60,5 @@ SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {
                          "contact.verify", "compliance.read", "suppression.add",
                          "mailbox.read", "sequence.read", "sequence.manage",
                          "inbox.read", "inbox.reply", "handoff.accept", "crm.read", "crm.manage",
-                         "agent.run", "research.run", "analytics.read"}),
+                         "agent.run", "research.run", "analytics.read", "product.read", "order.manage"}),
 }

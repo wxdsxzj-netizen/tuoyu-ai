@@ -689,6 +689,8 @@ class Account(TenantScoped, Base):
     released_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    custom: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")  # B2 自定义字段值
+    merged_into: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
 
 class Conversation(TenantScoped, Base):
@@ -776,6 +778,7 @@ class Opportunity(TenantScoped, Base):
     qualified_by: Mapped[str | None] = mapped_column(String(8), nullable=True)
     handoff_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     source: Mapped[str] = mapped_column(String(16), default="manual")
+    custom: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")  # B2 自定义字段值
 
 
 class Quote(TenantScoped, Base):
@@ -1085,3 +1088,191 @@ class DataExport(TenantScoped, Base):
     watermark: Mapped[str | None] = mapped_column(String(128), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ======================= B2：知识库 / 产品库 / CRM 补全 =======================
+class Product(TenantScoped, Base):
+    """产品 SPU（M1-03）。"""
+    __tablename__ = "products"
+    name_zh: Mapped[str] = mapped_column(String(200))
+    name_en: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    hs_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    hs_candidates: Mapped[list] = mapped_column(JSONB, default=list)
+    params: Mapped[dict] = mapped_column(JSONB, default=dict)
+    certifications: Mapped[list] = mapped_column(JSONB, default=list)
+    moq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lead_time_days: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    price_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    industries: Mapped[list] = mapped_column(JSONB, default=list)
+    images: Mapped[list] = mapped_column(JSONB, default=list)
+    selling_points: Mapped[list] = mapped_column(JSONB, default=list)  # [{text, kind: fact|expressive, source}]
+    translations: Mapped[dict] = mapped_column(JSONB, default=dict)  # {lang: {name, description, locked}}
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(12), default="active")
+
+
+class ProductSku(TenantScoped, Base):
+    """SKU 与价格体系（M10-31）：成本价 / 出厂价 / 阶梯价 / 底价（底价仅 price.floor 可见）。"""
+    __tablename__ = "product_skus"
+    product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    sku: Mapped[str] = mapped_column(String(64))
+    spec: Mapped[dict] = mapped_column(JSONB, default=dict)
+    unit: Mapped[str] = mapped_column(String(16), default="pcs")
+    cost_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    factory_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    floor_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tier_prices: Mapped[list] = mapped_column(JSONB, default=list)  # [{min_qty, price}]
+    customer_prices: Mapped[dict] = mapped_column(JSONB, default=dict)  # {account_id: price}
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+
+
+class Objection(TenantScoped, Base):
+    """异议应答库（M1-06）。"""
+    __tablename__ = "objections"
+    category: Mapped[str] = mapped_column(String(32))
+    question: Mapped[str] = mapped_column(String(300))
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(12), default="draft")  # draft / confirmed
+    preset: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class KbBoundary(TenantScoped, Base):
+    """承诺边界（M1-07/M1-17）：每租户一行。"""
+    __tablename__ = "kb_boundaries"
+    can_say: Mapped[list] = mapped_column(JSONB, default=list)
+    cannot_say: Mapped[list] = mapped_column(JSONB, default=list)
+    forbidden_words: Mapped[list] = mapped_column(JSONB, default=list)
+    human_topics: Mapped[list] = mapped_column(JSONB, default=list)
+    public_price_range: Mapped[bool] = mapped_column(Boolean, default=False)
+    lead_time_range: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class DocImport(TenantScoped, Base):
+    """文档导入（M1-02）。"""
+    __tablename__ = "doc_imports"
+    filename: Mapped[str] = mapped_column(String(255))
+    kind: Mapped[str] = mapped_column(String(8))
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    status: Mapped[str] = mapped_column(String(12), default="done")  # done / failed / unsupported
+    items_created: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class DealRecord(TenantScoped, Base):
+    """成交客户历史成交（M1-09）。"""
+    __tablename__ = "deal_records"
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    amount_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    deal_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+
+
+class ImportBatch(TenantScoped, Base):
+    """CRM / 成交客户导入批次（C-40 / C-42：24 小时内可撤销本批新建对象）。"""
+    __tablename__ = "import_batches"
+    kind: Mapped[str] = mapped_column(String(16))  # deals / accounts
+    created_ids: Mapped[dict] = mapped_column(JSONB, default=dict)  # {accounts: [...], deals: [...]}
+    stats: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String(10), default="done")  # done / undone
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class IcpVersion(TenantScoped, Base):
+    __tablename__ = "icp_versions"
+    icp_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    version_no: Mapped[int] = mapped_column(Integer)
+    snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class FieldDef(TenantScoped, Base):
+    """自定义字段（M10-08）。"""
+    __tablename__ = "field_defs"
+    __table_args__ = (UniqueConstraint("tenant_id", "object_type", "key"),)
+    object_type: Mapped[str] = mapped_column(String(16))  # account / opportunity / contact
+    key: Mapped[str] = mapped_column(String(40))
+    label: Mapped[str] = mapped_column(String(64))
+    field_type: Mapped[str] = mapped_column(String(12), default="text")  # text / number / date / select / bool
+    options: Mapped[list] = mapped_column(JSONB, default=list)
+    required: Mapped[bool] = mapped_column(Boolean, default=False)
+    visible_roles: Mapped[list] = mapped_column(JSONB, default=list)  # 空 = 全部角色
+    position: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class CrmSettings(TenantScoped, Base):
+    """客户分级规则（M10-04）、商机阶段配置（M10-20）、复购间隔（M10-34）。"""
+    __tablename__ = "crm_settings"
+    grade_rules: Mapped[dict] = mapped_column(JSONB, default=dict)
+    stages: Mapped[dict] = mapped_column(JSONB, default=dict)  # {stage: {label, enabled, required: [...], days}}
+    repurchase_days: Mapped[int] = mapped_column(Integer, default=90)
+
+
+class AccountMerge(TenantScoped, Base):
+    """客户合并记录（M10-07），保存被并对象的迁移清单，用于拆分还原。"""
+    __tablename__ = "account_merges"
+    master_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    merged_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    moved: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String(10), default="merged")  # merged / split
+
+
+class Sample(TenantScoped, Base):
+    """样品（M10-27）。"""
+    __tablename__ = "samples"
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    items: Mapped[list] = mapped_column(JSONB, default=list)
+    fee_type: Mapped[str] = mapped_column(String(10), default="free")  # free / paid / collect
+    fee_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    courier: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    tracking_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(12), default="requested")  # requested / shipped / received / feedback / converted
+    feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class SalesOrder(TenantScoped, Base):
+    """订单与回款（M10-28）。"""
+    __tablename__ = "sales_orders"
+    order_no: Mapped[str] = mapped_column(String(32))
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    quote_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    total_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    status: Mapped[str] = mapped_column(String(14), default="confirmed")  # confirmed / producing / shipped / completed / cancelled
+    milestones: Mapped[list] = mapped_column(JSONB, default=list)  # [{name, due, done_at}]
+    payment_plan: Mapped[list] = mapped_column(JSONB, default=list)  # [{name, due, amount_minor}]
+    payments: Mapped[list] = mapped_column(JSONB, default=list)  # [{at, amount_minor, ref}]
+    paid_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FxRate(Base):
+    """汇率（M10-30）：全局，每日更新。"""
+    __tablename__ = "fx_rates"
+    __table_args__ = (UniqueConstraint("currency", "rate_date"),)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    currency: Mapped[str] = mapped_column(String(3))
+    rate_date: Mapped[date] = mapped_column(Date)
+    cny_per_unit: Mapped[float] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(32))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Meeting(TenantScoped, Base):
+    """会议记录（C-33）。"""
+    __tablename__ = "meetings"
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attendees: Mapped[list] = mapped_column(JSONB, default=list)
+    minutes: Mapped[str | None] = mapped_column(Text, nullable=True)

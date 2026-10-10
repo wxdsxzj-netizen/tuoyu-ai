@@ -35,6 +35,8 @@ import ApprovalCenterPage from './pages/ApprovalCenter'
 import OrgPage from './pages/Org'
 import SecurityPage from './pages/Security'
 import RecyclePage from './pages/Recycle'
+import ProductsPage from './pages/Products'
+import CrmPlusPage from './pages/CrmPlus'
 import InvitePage from './pages/Invite'
 import BillingPage from './pages/Billing'
 
@@ -55,6 +57,8 @@ function Shell() {
     can('research.run') && { key: '/research', icon: <FileSearchOutlined />, label: t('menu.research') },
     can('analytics.read') && { key: '/analytics', icon: <BarChartOutlined />, label: t('menu.analytics') },
     can('kb.read') && { key: '/kb', icon: <BookOutlined />, label: t('menu.kb') },
+    can('product.read') && { key: '/products', icon: <BookOutlined />, label: t('menu.products') },
+    can('crm.read') && { key: '/crm-plus', icon: <BankOutlined />, label: t('menu.crmPlus') },
     can('icp.read') && { key: '/icp', icon: <AimOutlined />, label: t('menu.icp') },
     can('company.read') && { key: '/companies', icon: <BankOutlined />, label: t('menu.companies') },
     can('company.read') && { key: '/contacts', icon: <ContactsOutlined />, label: t('menu.contacts') },
@@ -105,6 +109,8 @@ function Shell() {
             <Route path="/org" element={<OrgPage />} />
             <Route path="/security" element={<SecurityPage />} />
             <Route path="/recycle" element={<RecyclePage />} />
+            <Route path="/products" element={<ProductsPage />} />
+            <Route path="/crm-plus" element={<CrmPlusPage />} />
             <Route path="/handoffs" element={<HandoffsPage />} />
             <Route path="/crm" element={<CrmPage />} />
             <Route path="/kb" element={<KbPage />} />

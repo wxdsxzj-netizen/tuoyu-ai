@@ -70,6 +70,8 @@ APPROVAL_TYPES = {
     "inquiry_review": ("D 级询盘复核", ["owner", "admin"], False, "inquiry.manage"),
     "suppression_revoke": ("解除抑制", ["owner"], True, "compliance.manage"),
     "data_export": ("全量数据导出", ["owner"], True, "data.export"),
+    "quote_unlock": ("已锁定单据解锁", ["owner", "admin"], False, "quote.approve"),
+    "account_merge": ("客户合并", ["owner", "admin"], False, "crm.admin"),
 }
 
 

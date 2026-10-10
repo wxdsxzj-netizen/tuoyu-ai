@@ -304,8 +304,20 @@ def handoff_sla_task():
 @celery_app.task(name="crm.daily")
 def crm_daily_task():
     """每日：商机卡点预警（N-10）。"""
+    from app.core.db import bypass_tenant
+    from app.crm.b2 import negative_tick, overdue_tick, refresh_fx, regrade_all
     from app.crm.service import stuck_tick
-    return _each_tenant(lambda db, tid: {"stuck_notified": stuck_tick(db)}, "crm")
+    db = SessionLocal()
+    try:
+        with bypass_tenant():
+            refresh_fx(db)  # M10-30：每日汇率（默认内置参考汇率，不访问外网）
+            db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+    finally:
+        db.close()
+    return _each_tenant(lambda db, tid: {"stuck_notified": stuck_tick(db), "grades": regrade_all(db), "overdue": overdue_tick(db),
+                                         "negative": negative_tick(db)}, "crm")
 
 
 @celery_app.task(name="inquiry.sla")
@@ -351,7 +363,9 @@ def org_hourly_task():
     from app.org.collab import kb_pending_tick, timeout_tick
 
     def fn(db, tid):
-        r = {"approvals_timeout": timeout_tick(db), "kb_tasks": kb_pending_tick(db)}
+        from app.org.legacy_approvals import legacy_tick
+        r = {"approvals_timeout": timeout_tick(db), "kb_tasks": kb_pending_tick(db), "legacy": legacy_tick(db)}
+        r["legacy"] = r["legacy"] if any(r["legacy"].values()) else 0
         if any(r.values()):
             write_audit(db, tenant_id=tid, action="org.hourly", actor_type="system", after=r)
         return r

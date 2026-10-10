@@ -74,6 +74,8 @@ class ReviewIn(BaseModel):
 @router.post("/inquiries/{iid}:review", tags=["inquiries"])
 def review_inquiry(iid: uuid.UUID, body: ReviewIn, request: Request, cu: CurrentUser = Depends(require("inquiry.manage")),
                    db: Session = Depends(get_db)):
+    from app.org.legacy_approvals import gate
+    gate(db, "inquiry_review", cu.user)
     i = inq_mod.review(db, _inq(db, cu, iid), body.genuine, body.reason, cu.user)
     audit(db, cu, request, "inquiry.review", "inquiry", i.id, genuine=body.genuine, reason=body.reason)
     db.commit()
@@ -267,6 +269,8 @@ def task_action(tid: uuid.UUID, action: str, request: Request, body: dict | None
         agent.confirm(db, t, cu.user)
     elif action == "decide":
         d = DecideIn(**body)
+        from app.org.legacy_approvals import gate
+        gate(db, "agent", cu.user, t.created_by)
         agent.decide(db, t, cu.user, d.approve, d.note)
     elif action == "pause":
         agent.pause(db, t)

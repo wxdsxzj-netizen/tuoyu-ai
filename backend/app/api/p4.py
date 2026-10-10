@@ -829,7 +829,10 @@ def void_quote(qid: uuid.UUID, body: VoidIn, request: Request, cu: CurrentUser =
 
 @router.post("/quotes/{qid}:new-version", tags=["crm"])
 def quote_new_version(qid: uuid.UUID, request: Request, cu: CurrentUser = Depends(require("crm.manage")), db: Session = Depends(get_db)):
-    nq = crm.new_version(db, _quote(db, qid, cu))
+    q = _quote(db, qid, cu)
+    if q.status in ("locked", "converted"):  # M10-26：已锁定单据改动需走解锁审批
+        raise AppError("CRM_DOC_LOCKED")
+    nq = crm.new_version(db, q)
     audit(db, cu, request, "quote.new_version", "quote", nq.id, version=nq.doc_version)
     db.commit()
     return quote_out(nq, "quote.approve" not in cu.permissions)

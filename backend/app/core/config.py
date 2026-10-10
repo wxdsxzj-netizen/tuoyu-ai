@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     llm_timeout_s: float = 60.0
 
     # P6：点数 / Agent / 询盘评分（均可通过环境变量调整）
+    fx_provider: str = "mock"  # mock：内置参考汇率，不访问外网
     pilot_grant_credits: float = 0.0  # 新租户首次使用时自动发放的点数；默认 0 = 只能由平台管理员手动充值
     agent_overrun_basis: str = "high"  # 自动暂停的参照：high（预估上限，默认）| mid（预估中位数，PRD 原文）
     agent_overrun_ratio: float = 1.0  # 实际消耗 > 参照 × 比例 时自动暂停

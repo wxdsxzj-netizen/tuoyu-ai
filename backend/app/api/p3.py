@@ -853,6 +853,8 @@ def decide(did: uuid.UUID, body: DecideIn, request: Request, cu: CurrentUser = D
     d = _get(db, MessageDraft, did)
     if d.status not in ("pending_approval", "needs_edit"):
         raise AppError("COMMON_INVALID_STATE")
+    from app.org.legacy_approvals import gate
+    gate(db, "content", cu.user)
     edited = bool(body.subject or body.body)
     if edited:
         d.subject, d.body = body.subject or d.subject, body.body or d.body

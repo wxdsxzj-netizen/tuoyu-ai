@@ -30,6 +30,14 @@ def knowledge(db: Session) -> dict:
         by.setdefault(it.type, []).append(it)
     forbidden = [it.title for it in by.get("boundary", []) if (it.data or {}).get("kind", "cannot_say") == "cannot_say"]
     text = "\n".join(f"[{it.type}] {it.title}: {it.content}" for t, its in by.items() if t != "boundary" for it in its)
+    from app.kb2.service import boundary_terms
+    from app.models import Objection, Product
+    forbidden += boundary_terms(db)  # M1-07 承诺边界：不能说 + 禁用词，进入 G2 一票否决
+    for p in db.scalars(select(Product).where(Product.deleted_at.is_(None), Product.status == "active").limit(30)):
+        facts = [x["text"] for x in (p.selling_points or []) if x.get("kind") == "fact"]
+        text += f"\n[product] {p.name_en or p.name_zh} {p.model or ''}: MOQ {p.moq or '-'}; certs {', '.join(p.certifications or [])}; " + "; ".join(facts)  # noqa: E501
+    for o in db.scalars(select(Objection).where(Objection.status == "confirmed", Objection.deleted_at.is_(None)).limit(40)):
+        text += f"\n[objection] {o.question}: {o.answer}"
     return {"by_type": by, "forbidden": forbidden, "text": text}
 
 
