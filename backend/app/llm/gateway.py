@@ -31,6 +31,13 @@ class LLMError(Exception):
     pass
 
 
+class LLMUnavailable(AppError, LLMError):
+    """全部提供方失败 / 达到每日上限：对 API 是 503 AppError，对功能代码是 LLMError（可回落规则）。"""
+
+    def __init__(self, reason: str):
+        AppError.__init__(self, "LLM_UNAVAILABLE", details={"reason": reason})
+
+
 class Provider(Protocol):
     name: str
 
@@ -126,6 +133,7 @@ class LLMGateway:
 
     def chat(self, messages: list[dict], *, temperature: float = 0.3, max_tokens: int = 1024,
              json_mode: bool = False) -> ChatResult:
+        _check_cap(self.primary)
         chain = [self.primary] + ([self.fallback] if self.fallback else [])
         last_err = None
         for i, p in enumerate(chain):
@@ -140,7 +148,28 @@ class LLMGateway:
             except LLMError as e:
                 last_err = e
                 log.warning("llm provider %s failed: %s", p.name, e)
-        raise AppError("LLM_UNAVAILABLE", details={"reason": str(last_err)})
+        raise LLMUnavailable(str(last_err))
+
+
+def _check_cap(p) -> None:
+    """每日真实调用上限（Redis 计数，按 UTC 日）；mock 不计。Redis 不可用时不拦截。"""
+    cap = get_settings().llm_daily_call_cap
+    if cap <= 0 or getattr(p, "name", "mock") == "mock":
+        return
+    try:
+        from datetime import UTC, datetime
+
+        import redis
+        r = redis.Redis.from_url(get_settings().redis_url, socket_timeout=1)
+        k = f"tl:llm:calls:{datetime.now(UTC):%Y%m%d}"
+        n = r.incr(k)
+        if n == 1:
+            r.expire(k, 2 * 86400)
+    except Exception:  # noqa: BLE001
+        return
+    if n > cap:
+        log.warning("llm daily cap reached (%s)", cap)
+        raise LLMUnavailable(f"今日真实模型调用已达上限 {cap}")
 
 
 _gateway: LLMGateway | None = None

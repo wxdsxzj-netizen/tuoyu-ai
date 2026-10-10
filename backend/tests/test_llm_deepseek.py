@@ -132,3 +132,34 @@ def test_rules_mode_eval_never_calls_model(ds):
     from app.b5 import evals
     r = evals.run_all()  # ds 未预置任何回复：若有一次真实 / 伪造调用都会 IndexError 而失败
     assert r["ok"] and not gw.USAGE
+
+
+def test_unavailable_is_both_app_and_llm_error_and_daily_cap(ds, monkeypatch):
+    from app.core.errors import AppError
+    from app.inbox.service import translate
+    calls, replies = ds
+    replies.append(_Resp(500, {"error": {"message": "down"}}))
+    with pytest.raises(gw.LLMError) as e:
+        gw.get_gateway().chat([{"role": "user", "content": "x"}])
+    assert isinstance(e.value, AppError) and e.value.status == 503
+    replies.append(_Resp(500, {}))
+    assert translate("Hallo")[0] is None  # 功能代码按 LLMError 降级，不再抛 503
+
+    class FakeRedis:
+        n = 0
+
+        def incr(self, k):
+            FakeRedis.n += 1
+            return FakeRedis.n
+
+        def expire(self, *a):
+            pass
+    import redis
+    monkeypatch.setattr(redis.Redis, "from_url", staticmethod(lambda *a, **k: FakeRedis()))
+    monkeypatch.setattr(get_settings(), "llm_daily_call_cap", 1)
+    replies.append(_ok("first"))
+    assert gw.get_gateway().chat([{"role": "user", "content": "x"}]).content == "first"
+    n_http = len(calls)
+    with pytest.raises(gw.LLMUnavailable):
+        gw.get_gateway().chat([{"role": "user", "content": "x"}])
+    assert len(calls) == n_http  # 超上限不再发请求

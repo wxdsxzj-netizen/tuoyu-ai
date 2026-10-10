@@ -5,14 +5,17 @@ from app.core.config import get_settings
 
 s = get_settings()
 celery_app = Celery("tradeleads", broker=s.redis_url, backend=s.redis_url, include=["app.tasks.jobs"])
+from app.core.config import get_settings as _gs  # noqa: E402
+
+_SLOW = _gs().beat_slow
 celery_app.conf.update(
     task_always_eager=s.celery_eager, task_eager_propagates=True, task_acks_late=True,
     worker_prefetch_multiplier=1,
     beat_schedule={
         "sanctions-daily": {"task": "sanctions.refresh", "schedule": crontab(hour=10, minute=30)},
-        "outreach-tick": {"task": "outreach.tick", "schedule": 60.0},
+        "outreach-tick": {"task": "outreach.tick", "schedule": 600.0 if _SLOW else 60.0},
         "mailbox-health": {"task": "mailbox.health", "schedule": 900.0},
-        "mailbox-poll": {"task": "mailbox.poll", "schedule": 120.0},
+        "mailbox-poll": {"task": "mailbox.poll", "schedule": 600.0 if _SLOW else 120.0},
         "dns-daily": {"task": "dns.daily", "schedule": crontab(hour=9, minute=0)},
         "dsr-daily": {"task": "dsr.daily", "schedule": crontab(hour=1, minute=0)},
         "handoff-sla": {"task": "handoff.sla", "schedule": 300.0},

@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-flash"  # DeepSeek-V4.1-Flash；更强可选 deepseek-v4-pro
     deepseek_thinking: str = "disabled"  # disabled：非思考模式（便宜、支持 temperature）；enabled：思考模式
     llm_timeout_s: float = 60.0
+    llm_daily_call_cap: int = 0  # 真实模型每日调用上限（0=不限）；超出后网关报不可用，各功能回落规则（演示 / 控成本）
+    beat_slow: bool = False  # 演示：放慢高频定时任务（序列 / 收信 10 分钟一次），减少真实模型调用
 
     # P6：点数 / Agent / 询盘评分（均可通过环境变量调整）
     fx_provider: str = "mock"  # mock：内置参考汇率，不访问外网；ecb：欧洲央行每日参考汇率（公开数据）
