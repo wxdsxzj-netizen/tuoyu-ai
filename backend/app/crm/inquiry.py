@@ -290,6 +290,10 @@ def _set(db, inq: Inquiry, uid, how, rule_id, now) -> str:
     if inq.grade == "A":  # N-02：A 级询盘到达，不可关闭
         notify(db, "N-02", [uid], f"A 级询盘：{inq.peer_email}", f"评分 {inq.score}，请在 1 个工作小时内首次响应", object_type="inquiry",
                object_id=inq.id, action_url="/inquiries", level="urgent")
+        if not inq.reassign_count and how != "manual":  # B5：事件触发 Agent（只在首次分配时）
+            from app.b5.agentx import fire
+            dom = (inq.peer_email or "").split("@")[-1]
+            fire(db, "inquiry.grade_a", {"email": inq.peer_email, "domain": dom, "company": dom, "country": inq.country})
     db.flush()
     return how
 

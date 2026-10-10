@@ -46,6 +46,16 @@ def detect_lang(text: str) -> str:
     return "en"
 
 
+def _inj(text: str) -> list[str]:
+    from app.b5.ai import injection_hits
+    return injection_hits(text)
+
+
+def _fence(text: str) -> str:
+    from app.b5.ai import fence
+    return fence(text, "email")
+
+
 def translate(text: str, target: str = "zh") -> tuple[str | None, str]:
     """经 LLM 网关翻译；不可用时返回 None（界面显示原文，X1 14.7）。mock 模型返回带标记的占位译文。"""
     if not text.strip():
@@ -152,14 +162,15 @@ def ingest_inbound(db: Session, *, peer: str, subject: str, body: str, header_me
     tr, _ = translate(body) if lang != "zh" else (None, "none")
     m = Message(conversation_id=c.id, direction="in", from_email=peer, subject=(subject or "")[:512], body=body or "", body_translated=tr,
                 language=lang, header_message_id=header_message_id, in_reply_to=refs[0] if refs else None, sent_by="customer",
-                category=category, confidence=confidence, detail={"sensitive": sensitive_topics(f"{subject} {body}")})
+                category=category, confidence=confidence, detail={"sensitive": sensitive_topics(f"{subject} {body}"),
+                                                                "injection": _inj(f"{subject} {body}")})
     db.add(m)
     now = utcnow()
     c.last_inbound_at = c.last_message_at = now
     c.status = "unread"
     c.language = lang
     c.last_category = category
-    c.needs_human = bool((confidence or 0) < 0.8 or m.detail["sensitive"])
+    c.needs_human = bool((confidence or 0) < 0.8 or m.detail["sensitive"] or m.detail["injection"])  # B5 X1：疑似提示注入转人工
     if c.account_id:
         a = db.get(Account, c.account_id)
         if a:
@@ -194,12 +205,14 @@ def suggest_replies(db: Session, c: Conversation, tone: str = "professional") ->
     kb = knowledge(db)
     drafts, model = [], "rules"
     try:
+        from app.b5.ai import GUARD
         res = get_gateway().chat([
+            {"role": "system", "content": GUARD},
             {"role": "system", "content": "You draft B2B export sales email replies. Use ONLY facts from KNOWLEDGE. Never commit to prices, "  # noqa: E501
              "payment terms, delivery dates, warranties, certificate authenticity or contract terms; for those say a colleague will confirm. "  # noqa: E501
              f'Tone: {tone}. Return JSON {{"drafts": [str, str]}} in the customer\'s language ({c.language or "en"}).'},
             {"role": "user", "content": json.dumps({"KNOWLEDGE": kb["text"][:4000], "FORBIDDEN": kb["forbidden"],
-                                                    "THREAD": [{"dir": m.direction, "body": m.body[-1500:]} for m in msgs[-6:]]}, ensure_ascii=False)}],  # noqa: E501
+                                                    "THREAD": [{"dir": m.direction, "body": _fence(m.body[-1500:])} for m in msgs[-6:]]}, ensure_ascii=False)}],  # noqa: E501
             json_mode=True, temperature=0.4)
         d = json.loads(res.content)
         if isinstance(d.get("drafts"), list) and d["drafts"]:

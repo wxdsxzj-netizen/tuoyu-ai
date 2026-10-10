@@ -18,7 +18,7 @@ SLA_HOURS, EXPIRE_DAYS, MAX_REASSIGN = 2, 7, 2
 
 QTY = re.compile(r"\b(\d[\d,.]*\s*(k\s*)?(pcs|pieces|units|sets|tons?|mt|kg|containers?|cartons?|pallets?|rolls?|meters?|sqm))\b", re.I)
 WHEN = re.compile(r"\b(by (the )?(end of )?(january|february|march|april|may|june|july|august|september|october|november|december|q[1-4]|"
-                  r"next (month|quarter|week))|within \d+ (days|weeks|months)|in \d+ (weeks|months)|next (month|quarter|season)|asap)\b", re.I)  # noqa: E501
+                  r"next (month|quarter|week))|(delivery|needed|ship\w*) (in|by|before) (january|february|march|april|may|june|july|august|september|october|november|december)|within \d+ (days|weeks|months)|in \d+ (weeks|months)|next (month|quarter|season)|asap)\b", re.I)  # noqa: E501
 USE = re.compile(r"\b(for (our|a|the) [\w\s-]{3,40}?(project|stores?|clients?|customers?|market|distribution|production|line|brand)|"
                  r"resell|retail|wholesale|distribut\w+|oem|private label)\b", re.I)
 PRODUCT = re.compile(r"\b(model|item|sku|part)\s*(no\.?|number|#)?\s*[:#]?\s*([A-Z0-9][\w-]{1,30})", re.I)
@@ -142,6 +142,8 @@ def accept(db: Session, h: Handoff, user) -> Opportunity:
     if contact and not contact.account_id:
         contact.account_id = acc.id
     db.flush()
+    from app.b5.agentx import fire
+    fire(db, "handoff.accepted", {"company": acc.name, "domain": acc.domain, "country": acc.country, "email": contact.email if contact else None})  # noqa: E501
     return opp
 
 

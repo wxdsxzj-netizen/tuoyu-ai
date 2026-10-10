@@ -1,0 +1,112 @@
+{
+ "threshold": 0.85,
+ "cases": [
+  {
+   "in": {
+    "subject": "Re: valves",
+    "body": "Please send price for 500 pcs DN50",
+    "from": "a@b.com"
+   },
+   "expect": "inquiry"
+  },
+  {
+   "in": {
+    "subject": "RFQ",
+    "body": "Can you quote 2000 units of model BV-50, FOB Ningbo?",
+    "from": "buyer@acme.com"
+   },
+   "expect": "inquiry"
+  },
+  {
+   "in": {
+    "subject": "Out of office",
+    "body": "I am out of office until Monday",
+    "from": "a@b.com"
+   },
+   "expect": "auto_reply"
+  },
+  {
+   "in": {
+    "subject": "Automatic reply",
+    "body": "Thank you for your email. I am on vacation and will return on 12 May.",
+    "from": "a@b.com"
+   },
+   "expect": "auto_reply"
+  },
+  {
+   "in": {
+    "subject": "Re: intro",
+    "body": "unsubscribe me",
+    "from": "a@b.com"
+   },
+   "expect": "unsubscribe"
+  },
+  {
+   "in": {
+    "subject": "Re: intro",
+    "body": "Please remove me from your mailing list.",
+    "from": "a@b.com"
+   },
+   "expect": "unsubscribe"
+  },
+  {
+   "in": {
+    "subject": "Delivery Status Notification (Failure)",
+    "body": "550 user unknown",
+    "from": "mailer-daemon@x.com"
+   },
+   "expect": "bounce"
+  },
+  {
+   "in": {
+    "subject": "Undeliverable: intro",
+    "body": "The email account that you tried to reach does not exist.",
+    "from": "postmaster@x.com"
+   },
+   "expect": "bounce"
+  },
+  {
+   "in": {
+    "subject": "Re: x",
+    "body": "Not interested, thanks",
+    "from": "a@b.com"
+   },
+   "expect": "not_interested"
+  },
+  {
+   "in": {
+    "subject": "Re: x",
+    "body": "We already have a supplier and are not looking to change.",
+    "from": "a@b.com"
+   },
+   "expect": "not_interested"
+  },
+  {
+   "in": {
+    "subject": "Re: x",
+    "body": "Please contact my colleague john@b.com who handles purchasing",
+    "from": "a@b.com"
+   },
+   "expect": "referral"
+  },
+  {
+   "in": {
+    "subject": "Re: x",
+    "body": "Sounds good, can we talk next week?",
+    "from": "a@b.com"
+   },
+   "expect": "positive"
+  },
+  {
+   "in": {
+    "subject": "Re: x",
+    "body": "Interesting. Please send your catalogue.",
+    "from": "a@b.com"
+   },
+   "expect": [
+    "positive",
+    "inquiry"
+   ]
+  }
+ ]
+}

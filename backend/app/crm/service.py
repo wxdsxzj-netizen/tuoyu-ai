@@ -76,6 +76,8 @@ def change_stage(db: Session, opp: Opportunity, stage: str, lost_reason: str | N
         acc = db.get(Account, opp.account_id)
         acc.stage = "customer"
         acc.grade = "A" if opp.amount_minor >= 5_000_000 else "B"
+        from app.b5.agentx import fire
+        fire(db, "deal.won", {"company": acc.name, "domain": acc.domain, "country": acc.country})
         from app.crm.b2 import repurchase_task
         repurchase_task(db, opp)  # M10-34
         ids = [c.id for c in db.scalars(select(Contact).where(Contact.account_id == acc.id))]

@@ -53,7 +53,14 @@ def main(argv=None):
     mi.add_argument("--method")
     mi.add_argument("--ref")
     mi.add_argument("--operator", default="cli")
+    sub.add_parser("eval")  # B5 X1：AI 评测，未达门槛返回 1
     a = ap.parse_args(argv)
+    if a.cmd == "eval":
+        from app.b5.evals import run_all
+        r = run_all()
+        for x in r["suites"]:
+            print(f"{x['suite']:<10} {x['passed']}/{x['total']} score={x['score']} threshold={x['threshold']} {'OK' if x['ok'] else 'FAIL'} ({x['prompt_version']})")  # noqa: E501
+        return 0 if r["ok"] else 1
     db = SessionLocal()
     try:
         if a.cmd == "create-tenant":

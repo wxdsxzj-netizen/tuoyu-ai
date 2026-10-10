@@ -1,0 +1,5 @@
+{"threshold": 1.0, "cases": [
+ {"in": "We offer the lowest price in the market and guaranteed delivery.", "expect": "veto"},
+ {"in": "All products come with a lifetime warranty.", "expect": "veto"},
+ {"in": "Our ball valves are ISO 9001 certified. Would a sample help?", "expect": "pass"}
+]}

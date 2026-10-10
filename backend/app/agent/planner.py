@@ -31,7 +31,7 @@ def rule_parse(text: str) -> dict:
         return {"type": "research", "targets": doms[:10], "source": "rules"}
     if HELP_RX.search(text.strip()) and not re.search(r"找|开发|find|prospect", low):
         return {"type": "help", "source": "rules"}
-    m = re.search(r"(\d{1,5})\s*(家|个|位|companies|leads|contacts)", text, re.I)
+    m = re.search(r"(\d{1,5})\s*(家|个|位|companies|leads|contacts)", text, re.I) or re.search(r"\b(?:find|get|list)\s+(\d{1,5})\b", text, re.I)  # B5 评测发现  # noqa: E501
     country = next((v for k, v in COUNTRIES.items() if (k in low if k.isascii() else k in text)), None)
     industry = next((v for k, v in INDUSTRIES.items() if (k in low if k.isascii() else k in text)), None)
     roles = sorted({v for k, v in ROLES.items() if (k in low if k.isascii() else k in text)})

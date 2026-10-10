@@ -28,6 +28,7 @@ jobs:
       - run: ruff check app tests
       - name: 迁移可从零执行
         run: alembic upgrade head
+      - run: python -m app.admin eval
       - run: pytest -q -p no:cacheprovider
   frontend:
     runs-on: ubuntu-latest

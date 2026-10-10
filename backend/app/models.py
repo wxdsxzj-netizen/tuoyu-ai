@@ -146,6 +146,7 @@ class KnowledgeItem(TenantScoped, Base):
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)  # pending/confirmed/rejected/disabled
     confirmed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     crawl_job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    translations: Mapped[dict] = mapped_column(JSONB, default=dict)  # B5 M1-13 多语言知识 {lang: {title, content, locked}}
 
 
 class Icp(TenantScoped, Base):
@@ -618,6 +619,8 @@ class MessageDraft(TenantScoped, Base):
     reviewed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     variant: Mapped[str | None] = mapped_column(String(4), nullable=True)  # B3 A/B
+    kb_version: Mapped[int | None] = mapped_column(Integer, nullable=True)  # B5 M7-14 内容快照
+    prompt_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     language: Mapped[str | None] = mapped_column(String(5), nullable=True)
 
 
@@ -1485,3 +1488,84 @@ class IdempotencyKey(Base):
     body: Mapped[bytes] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     __table_args__ = (UniqueConstraint("scope", "key", name="uq_idem_scope_key"),)
+
+
+# ======================= B5：AI 深化 =======================
+class StyleProfile(TenantScoped, Base):
+    """写信风格指纹（M1-08）：从本人已发送的人工回复 / 已审批草稿学习。user_id 为空 = 公司级。"""
+    __tablename__ = "style_profiles"
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    features: Mapped[dict] = mapped_column(JSONB, default=dict)
+    samples: Mapped[int] = mapped_column(Integer, default=0)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class KbVersion(TenantScoped, Base):
+    """知识版本（M1-12）：发布时对已确认知识做快照，草稿 / Agent 日志绑定版本号。"""
+    __tablename__ = "kb_versions"
+    version: Mapped[int] = mapped_column(Integer)
+    digest: Mapped[str] = mapped_column(String(64))
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    items: Mapped[list] = mapped_column(JSONB, default=list)
+    note: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class ResearchQuestion(TenantScoped, Base):
+    """背调深度问答（M4-10）。"""
+    __tablename__ = "research_questions"
+    report_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    question: Mapped[str] = mapped_column(Text)
+    answer: Mapped[str] = mapped_column(Text)
+    citations: Mapped[list] = mapped_column(JSONB, default=list)
+    grounded: Mapped[bool] = mapped_column(Boolean, default=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class SavedReport(TenantScoped, Base):
+    """自定义报表（M11-08）：指标 × 维度 × 时间，可订阅。"""
+    __tablename__ = "saved_reports"
+    name: Mapped[str] = mapped_column(String(100))
+    spec: Mapped[dict] = mapped_column(JSONB, default=dict)
+    subscribe: Mapped[str | None] = mapped_column(String(8), nullable=True)  # weekly / monthly
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LearningReport(TenantScoped, Base):
+    """效果学习（M12-08 / E2E-06 / M11-10 月度复盘）。"""
+    __tablename__ = "learning_reports"
+    kind: Mapped[str] = mapped_column(String(12))  # learning / monthly
+    period: Mapped[str] = mapped_column(String(32))
+    content: Mapped[dict] = mapped_column(JSONB, default=dict)
+    applied: Mapped[list] = mapped_column(JSONB, default=list)
+
+
+class AgentSchedule(TenantScoped, Base):
+    """定时 / 事件触发任务（M12-09）。执行仍走原审批门。"""
+    __tablename__ = "agent_schedules"
+    name: Mapped[str] = mapped_column(String(100))
+    text: Mapped[str] = mapped_column(Text)
+    trigger: Mapped[str] = mapped_column(String(12))  # daily / weekly / monthly / event
+    hour: Mapped[int] = mapped_column(Integer, default=9)
+    weekday: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    event: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    autonomy: Mapped[str] = mapped_column(String(2), default="L1")
+    budget: Mapped[float | None] = mapped_column(Float, nullable=True)
+    owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    runs: Mapped[int] = mapped_column(Integer, default=0)
+    max_runs_per_day: Mapped[int] = mapped_column(Integer, default=3)
+
+
+class EvalRun(TimestampMixin, Base):
+    """AI 评测（X1）：评测集 × 提示词版本 × 模型 → 指标；未达门槛禁止发布。全局。"""
+    __tablename__ = "eval_runs"
+    suite: Mapped[str] = mapped_column(String(32))
+    prompt_version: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(64))
+    total: Mapped[int] = mapped_column(Integer)
+    passed: Mapped[int] = mapped_column(Integer)
+    score: Mapped[float] = mapped_column(Float)
+    threshold: Mapped[float] = mapped_column(Float)
+    ok: Mapped[bool] = mapped_column(Boolean)
+    failures: Mapped[list] = mapped_column(JSONB, default=list)

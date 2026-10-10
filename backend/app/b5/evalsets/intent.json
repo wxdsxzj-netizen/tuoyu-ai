@@ -1,0 +1,7 @@
+{"threshold": 0.8, "cases": [
+ {"in": "找 200 家波兰暖通分销商的采购经理", "expect": {"type": "prospect", "count": 200, "country": "PL", "industry": "HVAC"}},
+ {"in": "find 50 HVAC distributors in Germany, purchasing managers", "expect": {"type": "prospect", "count": 50, "country": "DE"}},
+ {"in": "帮我找 30 家美国的阀门进口商", "expect": {"type": "prospect", "count": 30, "country": "US"}},
+ {"in": "怎么绑定邮箱？", "expect": {"type": "help"}},
+ {"in": "背调 acme-valves.com", "expect": {"type": "research"}}
+]}

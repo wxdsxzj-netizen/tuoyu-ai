@@ -106,7 +106,8 @@ def ensure_draft(db: Session, e: Enrollment, seq: Sequence, step: SequenceStep) 
         status = "approved"  # L2：质检 ≥ 85 自动通过（需租户开启，试点默认关闭）
     vals = dict(subject=res["subject"], body=res["body"], facts_used=res["facts_used"], personalization=res["personalization"],
                 qa_score=res["qa"]["score"], qa_detail=res["qa"], rewrite_count=res["rewrite_count"], model=res["model"],
-                status=status, step_version=step.version, reviewed_by=None, variant=(variant or {}).get("key"), language=lang)
+                status=status, step_version=step.version, reviewed_by=None, variant=(variant or {}).get("key"), language=lang,
+                kb_version=res.get("kb_version"), prompt_version=res.get("prompt_version"))
     if d:  # 步骤被修改：重新生成并需重新审批（BR-7-14）
         for k, v in vals.items():
             setattr(d, k, v)

@@ -1,0 +1,5 @@
+{"threshold": 0.75, "cases": [
+ {"in": "We need 5000 pcs ball valves for a hospital project, delivery in March.", "expect": {"quantity": true, "use": true, "timing": true}},
+ {"in": "Please quote 200 units, needed by next month.", "expect": {"quantity": true, "timing": true}},
+ {"in": "Send me your catalogue.", "expect": {"quantity": false}}
+]}

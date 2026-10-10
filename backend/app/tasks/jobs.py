@@ -415,3 +415,10 @@ def b4_daily_task():
     if date.today().day == 1:
         r["month_close"] = month_close_all()
     return r
+
+
+@celery_app.task(name="b5.hourly")
+def b5_hourly_task():
+    """每小时：定时触发的 Agent 任务（只创建任务，执行仍走审批门）。"""
+    from app.b5.agentx import tick_all
+    return tick_all()

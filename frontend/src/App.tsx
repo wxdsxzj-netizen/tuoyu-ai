@@ -37,6 +37,7 @@ import SharedReportPage from './pages/SharedReport'
 import WidgetsPage from './pages/Widgets'
 import SupportPage from './pages/Support'
 import BillingPlusPage from './pages/BillingPlus'
+import AiLabPage from './pages/AiLab'
 import WidgetEmbedPage from './pages/WidgetEmbed'
 import StatusPage from './pages/Status'
 import TodayPage from './pages/Today'
@@ -67,6 +68,7 @@ function Shell() {
     can('research.run') && { key: '/research', icon: <FileSearchOutlined />, label: t('menu.research') },
     can('sequence.read') && { key: '/outreach-tools', icon: <FileSearchOutlined />, label: t('menu.outreachTools') },
     can('inbox.read') && { key: '/widgets', icon: <MessageOutlined />, label: t('menu.widgets') },
+    { key: '/ai-lab', icon: <BankOutlined />, label: t('menu.aiLab') },
     can('billing.read') && { key: '/billing-plus', icon: <BankOutlined />, label: t('menu.billingPlus') },
     { key: '/support', icon: <BookOutlined />, label: t('menu.support') },
     can('analytics.read') && { key: '/insights', icon: <FileSearchOutlined />, label: t('menu.insights') },
@@ -124,6 +126,7 @@ function Shell() {
             <Route path="/widgets" element={<WidgetsPage />} />
             <Route path="/support" element={<SupportPage />} />
             <Route path="/billing-plus" element={<BillingPlusPage />} />
+            <Route path="/ai-lab" element={<AiLabPage />} />
             <Route path="/billing" element={<BillingPage />} />
             <Route path="/today" element={<TodayPage />} />
             <Route path="/approvals-center" element={<ApprovalCenterPage />} />

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.compliance.unsubscribe import build_footer
-from app.llm.gateway import LLMError, get_gateway
+from app.llm.gateway import LLMError
 from app.models import Company, Contact, Icp, KnowledgeItem, Sequence, SequenceStep, TenantCompliance
 from app.outreach import qa
 
@@ -101,16 +101,17 @@ def heuristic(contact: Contact, company: Company | None, kb: dict, purpose: str,
     return {"subject": subject, "body": "\n\n".join(lines), "facts_used": facts, "model": "rules"}
 
 
-def _llm(contact, company, kb, step, seq, sender, feedback=None) -> dict | None:
+def _llm(contact, company, kb, step, seq, sender, feedback=None, style="") -> dict | None:
     length = "50-150 words" if step.purpose == "first" else "30-120 words"
     msgs = [{"role": "system", "content": SYSTEM.format(lang=seq.language or "en", length=length)},
             {"role": "user", "content": json.dumps({
                 "KNOWLEDGE": kb["text"][:6000], "FORBIDDEN_PHRASES": kb["forbidden"],
                 "RECIPIENT": recipient_facts(contact, company), "RECIPIENT_FIRST_NAME": _first_name(contact),
-                "STEP_PURPOSE": step.purpose, "INSTRUCTIONS": step.instructions or "", "SENDER": sender,
+                "STEP_PURPOSE": step.purpose, "INSTRUCTIONS": ((step.instructions or "") + " " + style).strip(), "SENDER": sender,
                 "ICP": _icp_text(seq), "FIX_THESE_ISSUES": feedback}, ensure_ascii=False)}]
     try:
-        res = get_gateway().chat(msgs, json_mode=True, temperature=0.5)
+        from app.b5.ai import guarded_chat
+        res = guarded_chat(msgs, json_mode=True, temperature=0.5)  # B5 X1：注入防护系统提示
         d = json.loads(res.content)
         if isinstance(d, dict) and d.get("subject") and d.get("body"):
             return {"subject": str(d["subject"])[:256], "body": str(d["body"]), "facts_used": list(d.get("facts_used") or []),
@@ -149,6 +150,14 @@ def write(db: Session, *, seq: Sequence, step: SequenceStep, contact: Contact, s
         icp = db.get(Icp, seq.icp_id)
         if icp:
             _icp_cache[seq.id] = f"{icp.name}: {icp.description}; industries={icp.industries}; roles={icp.roles}"
+    from app.b5 import ai as b5ai
+    lang = getattr(seq, "_lang", None) or seq.language
+    if lang and lang not in ("en", "auto", "zh"):  # B5 M1-13：有目标语种译文时一并提供
+        tr = b5ai.kb_text_for(db, lang)
+        if tr:
+            kb = {**kb, "text": kb["text"] + f"\n[knowledge in {lang}]\n" + tr[:3000]}
+    style = b5ai.style_hint(db, seq.owner_id)  # B5 M1-08 风格指纹
+    kb_ver = b5ai.version_for_write(db)  # B5 M1-12 / M7-14 内容快照绑定知识版本
     footer = footer_for(db, "https://unsubscribe.example/preview", gdpr)
     has_fact = bool(company and (company.industry or company.name))
     personalization = "medium" if has_fact else "degraded"
@@ -159,7 +168,9 @@ def write(db: Session, *, seq: Sequence, step: SequenceStep, contact: Contact, s
                      "body": render_template(step.body_tpl or "", contact, company, kb, sender),
                      "facts_used": recipient_facts(contact, company), "model": "template"}
         else:
-            draft = _llm(contact, company, kb, step, seq, sender, feedback) or heuristic(contact, company, kb, step.purpose, sender)
+            draft = _llm(contact, company, kb, step, seq, sender, feedback, style) or heuristic(contact, company, kb, step.purpose, sender)
+            if draft.get("model") == "rules":
+                draft["body"] = b5ai.apply_style(draft["body"], db, seq.owner_id)
         res = qa.check(draft["subject"], draft["body"], kb_text=kb["text"], forbidden=kb["forbidden"], facts_used=draft["facts_used"],
                        personalization=personalization, purpose=step.purpose, footer_missing=footer["missing"])
         if res["passed"] or step.mode == "template" or footer["missing"]:
@@ -171,4 +182,5 @@ def write(db: Session, *, seq: Sequence, step: SequenceStep, contact: Contact, s
         if draft["model"] == "rules":
             break
     status = "pending_approval" if res["passed"] else "needs_edit"
-    return {**draft, "personalization": personalization, "qa": res, "rewrite_count": min(rewrites, 2), "status": status}
+    return {**draft, "personalization": personalization, "qa": res, "rewrite_count": min(rewrites, 2), "status": status,
+            "kb_version": kb_ver, "prompt_version": b5ai.PROMPT_VERSIONS["writer"] if step.mode != "template" else "template"}

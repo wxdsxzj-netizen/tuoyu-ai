@@ -25,7 +25,7 @@ OOO = re.compile(r"\b(out of (the )?office|ooo|on (annual )?leave|on vacation|on
                  r"abwesend|absent du bureau|fuera de la oficina)\b|休假|不在办公室|自动回复", re.I)
 BOUNCE_SUBJ = re.compile(r"(undeliver|delivery status notification|mail delivery (failed|subsystem)|returned mail|failure notice|"
                          r"delivery has failed|无法投递|退信)", re.I)
-NOT_INT = re.compile(r"\b(not interested|no thanks|no thank you|not relevant|we are not looking|not a fit|no need)\b|不感兴趣|不需要", re.I)
+NOT_INT = re.compile(r"\b(not interested|no thanks|no thank you|not relevant|we are not looking|not a fit|no need|already have a (supplier|vendor)|not looking to change)\b|不感兴趣|不需要", re.I)  # noqa: E501
 SAMPLE = re.compile(r"\bsamples?\b|样品", re.I)
 INQUIRY = re.compile(r"\b(price|pricing|quote|quotation|moq|catalog(ue)?|price list|lead time|specification)\b|报价|价格", re.I)
 MEETING = re.compile(r"\b(call|meeting|zoom|teams|schedule|available on)\b", re.I)
