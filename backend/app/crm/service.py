@@ -79,6 +79,8 @@ def change_stage(db: Session, opp: Opportunity, stage: str, lost_reason: str | N
             removed += 1
     opp.prev_stage = opp.stage if opp.stage != "lost" else opp.prev_stage
     opp.stage, opp.stage_entered_at = stage, utcnow()
+    from app.org.collab import on_stage_change
+    on_stage_change(db, opp, stage)  # M10-05：自动跟进任务
     db.flush()
     return {"stage": stage, "enrollments_removed": removed}
 

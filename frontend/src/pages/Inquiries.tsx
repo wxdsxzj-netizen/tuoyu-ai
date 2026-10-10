@@ -69,7 +69,9 @@ function InquiryList() {
           {view.status === 'pending_review' && can('inquiry.manage') && <>
             <Button type="primary" onClick={() => act('review', { genuine: true })}>{t('p5.genuine')}</Button>
             <Button danger onClick={() => act('review', { genuine: false, reason: 'invalid' })}>{t('p5.invalid')}</Button></>}
-          {view.status === 'pending_assign' && <Button type="primary" onClick={() => act('assign', { assignee_id: me?.user.id })}>{t('p5.claim')}</Button>}
+          {view.status === 'pending_assign' && (view.assigned_by === 'grab'
+            ? <Button type="primary" onClick={() => act('grab', {})}>{t('b1.grab')}</Button>
+            : <Button type="primary" onClick={() => act('assign', { assignee_id: me?.user.id })}>{t('p5.claim')}</Button>)}
           {can('inquiry.manage') && ['assigned', 'pending_assign'].includes(view.status) &&
             <Select placeholder={t('p5.reassign')} style={{ width: 180 }} onChange={v => act('assign', { assignee_id: v })}
               options={users.map(u => ({ value: u.id, label: u.name }))} />}
@@ -104,6 +106,8 @@ function Rules() {
       <Button type="primary" onClick={() => { form.resetFields(); form.setFieldsValue({ priority: 100 }); setEdit({}) }}>{t('p5.newRule')}</Button>
       <Input style={{ width: 200 }} value={tz} onChange={e => setTz(e.target.value)} addonBefore={t('p5.tz')} />
       <Button onClick={() => api.put('/inquiries/settings/timezone', { business_tz: tz })}>{t('p5.save')}</Button>
+      <Select style={{ width: 160 }} placeholder={t('b1.grabMode')} onChange={v => api.put('/inquiries/settings/grab-mode', { enabled: v === 'on' })}
+        options={[{ value: 'on', label: t('b1.grabOn') }, { value: 'off', label: t('b1.grabOff') }]} />
     </Space>}
     <Table rowKey="id" dataSource={rows} size="small" columns={[
       { title: t('p5.priority'), dataIndex: 'priority' }, { title: t('p5.ruleName'), dataIndex: 'name' },

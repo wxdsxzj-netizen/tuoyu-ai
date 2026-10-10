@@ -319,3 +319,40 @@ def inquiry_sla_task():
             write_audit(db, tenant_id=tid, action="inquiry.sla_tick", actor_type="system", after=r)
         return r
     return _each_tenant(fn, "inquiry")
+
+
+@celery_app.task(name="org.data_export")
+def data_export_task(tenant_id: str, export_id: str):
+    import uuid as _u
+
+    from app.core.db import tenant_context
+    from app.models import DataExport
+    from app.org.export import build
+    db = SessionLocal()
+    try:
+        with tenant_context(_u.UUID(tenant_id)):
+            ex = db.get(DataExport, _u.UUID(export_id))
+            if ex and ex.status == "pending":
+                build(db, ex)
+                write_audit(db, tenant_id=ex.tenant_id, action="data.export.built", actor_type="system", object_type="data_export",
+                            object_id=ex.id, after={"status": ex.status, "counts": ex.counts, "size": ex.size_bytes})
+                if ex.status == "ready":
+                    from app.crm.notify import notify
+                    notify(db, "N-32", [ex.requested_by], "数据导出已就绪", "下载链接 7 天内有效", object_type="data_export",
+                           object_id=ex.id, action_url="/security")
+            db.commit()
+    finally:
+        db.close()
+
+
+@celery_app.task(name="org.hourly")
+def org_hourly_task():
+    """每小时：统一审批单超时处理（升级 / 拒绝）、知识库待确认超 7 天待办。"""
+    from app.org.collab import kb_pending_tick, timeout_tick
+
+    def fn(db, tid):
+        r = {"approvals_timeout": timeout_tick(db), "kb_tasks": kb_pending_tick(db)}
+        if any(r.values()):
+            write_audit(db, tenant_id=tid, action="org.hourly", actor_type="system", after=r)
+        return r
+    return _each_tenant(fn, "org")

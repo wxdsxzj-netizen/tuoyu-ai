@@ -48,7 +48,14 @@ def get_current_user(request: Request, cred: HTTPAuthorizationCredentials | None
         raise AppError("COMMON_UNAUTHENTICATED") from None
     if not user.is_active or tenant.status != "active":
         raise AppError("AUTH_USER_DISABLED")
+    if payload.get("sid"):  # B1：会话可被撤销（停用 / 离职 / 手动下线）
+        from app.org.security import touch
+        try:
+            touch(db, uuid.UUID(payload["sid"]), uid)
+        except ValueError:
+            raise AppError("COMMON_UNAUTHENTICATED") from None
     request.state.user_id = uid
+    request.state.session_id = payload.get("sid")
     return CurrentUser(user=user, tenant=tenant, permissions=user.role.permission_codes)
 
 

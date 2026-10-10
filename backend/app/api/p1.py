@@ -585,7 +585,10 @@ def search_contacts(q: str | None = None, company_id: uuid.UUID | None = None, t
         stmt = stmt.where(Contact.email_status == email_status)
     if has_email is not None:
         stmt = stmt.where(Contact.email.is_not(None) if has_email else Contact.email.is_(None))
-    return page_of(db, stmt.order_by(Contact.created_at.desc(), Contact.id), page, size, contact_out)
+    res = page_of(db, stmt.order_by(Contact.created_at.desc(), Contact.id), page, size, contact_out)
+    from app.org.collab import guard  # M14-08：批量查看联系方式限速 + 异常检测
+    guard(db, cu.user, "contact_view", len(res["items"]) if isinstance(res, dict) else len(res.items))
+    return res
 
 
 @router.post("/contacts", status_code=201, tags=["contacts"])

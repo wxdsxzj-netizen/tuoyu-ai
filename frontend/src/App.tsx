@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { Layout, Menu, Dropdown, Spin, Space, Select, Typography } from 'antd'
-import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined, BookOutlined, AimOutlined, BankOutlined, ContactsOutlined, ImportOutlined, SafetyCertificateOutlined, MailOutlined, SendOutlined, CheckSquareOutlined, FileProtectOutlined, InboxOutlined, MessageOutlined, GiftOutlined, ShopOutlined, FireOutlined, RobotOutlined, BarChartOutlined, FileSearchOutlined, WalletOutlined } from '@ant-design/icons'
+import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined, BookOutlined, AimOutlined, BankOutlined, ContactsOutlined, ImportOutlined, SafetyCertificateOutlined, MailOutlined, SendOutlined, CheckSquareOutlined, FileProtectOutlined, InboxOutlined, MessageOutlined, GiftOutlined, ShopOutlined, FireOutlined, RobotOutlined, BarChartOutlined, FileSearchOutlined, WalletOutlined, ScheduleOutlined, ApartmentOutlined, LockOutlined, RestOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from './auth'
 import i18n, { LOCALE_KEY } from './i18n'
@@ -30,6 +30,12 @@ import InquiriesPage from './pages/Inquiries'
 import AgentPage from './pages/Agent'
 import AnalyticsPage from './pages/Analytics'
 import ResearchPage from './pages/Research'
+import TodayPage from './pages/Today'
+import ApprovalCenterPage from './pages/ApprovalCenter'
+import OrgPage from './pages/Org'
+import SecurityPage from './pages/Security'
+import RecyclePage from './pages/Recycle'
+import InvitePage from './pages/Invite'
 import BillingPage from './pages/Billing'
 
 function Shell() {
@@ -39,6 +45,8 @@ function Shell() {
   const loc = useLocation()
   const items = [
     { key: '/', icon: <DashboardOutlined />, label: t('menu.dashboard') },
+    { key: '/today', icon: <ScheduleOutlined />, label: t('menu.today') },
+    { key: '/approvals-center', icon: <AuditOutlined />, label: t('menu.approvalCenter') },
     can('agent.run') && { key: '/agent', icon: <RobotOutlined />, label: t('menu.agent') },
     can('inbox.read') && { key: '/inbox', icon: <MessageOutlined />, label: t('menu.inbox') },
     can('inbox.read') && { key: '/inquiries', icon: <FireOutlined />, label: t('menu.inquiries') },
@@ -58,6 +66,9 @@ function Shell() {
     can('compliance.read') && { key: '/compliance', icon: <SafetyCertificateOutlined />, label: t('menu.compliance') },
     can('dsr.manage') && { key: '/dsr', icon: <FileProtectOutlined />, label: t('menu.dsr') },
     can('user.read') && { key: '/users', icon: <TeamOutlined />, label: t('menu.users') },
+    can('user.read') && { key: '/org', icon: <ApartmentOutlined />, label: t('menu.org') },
+    { key: '/security', icon: <LockOutlined />, label: t('menu.security') },
+    { key: '/recycle', icon: <RestOutlined />, label: t('menu.recycle') },
     can('tenant.read') && { key: '/tenant', icon: <SettingOutlined />, label: t('menu.tenant') },
     can('billing.read') && { key: '/billing', icon: <WalletOutlined />, label: t('menu.billing') },
     can('audit.read') && { key: '/audit', icon: <AuditOutlined />, label: t('menu.audit') },
@@ -89,6 +100,11 @@ function Shell() {
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route path="/research" element={<ResearchPage />} />
             <Route path="/billing" element={<BillingPage />} />
+            <Route path="/today" element={<TodayPage />} />
+            <Route path="/approvals-center" element={<ApprovalCenterPage />} />
+            <Route path="/org" element={<OrgPage />} />
+            <Route path="/security" element={<SecurityPage />} />
+            <Route path="/recycle" element={<RecyclePage />} />
             <Route path="/handoffs" element={<HandoffsPage />} />
             <Route path="/crm" element={<CrmPage />} />
             <Route path="/kb" element={<KbPage />} />
@@ -120,6 +136,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/confirm/:token" element={<ConfirmPage />} />
+      <Route path="/invite/:token" element={<InvitePage />} />
       <Route path="/login" element={me ? <Navigate to="/" /> : <LoginPage />} />
       <Route path="/*" element={me ? <Shell /> : <Navigate to="/login" />} />
     </Routes>

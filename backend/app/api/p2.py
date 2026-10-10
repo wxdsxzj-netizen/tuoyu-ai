@@ -188,6 +188,16 @@ def revoke(sid: uuid.UUID, body: RevokeIn, request: Request, cu: CurrentUser = D
     s = db.scalar(select(Suppression).where(Suppression.id == sid, Suppression.deleted_at.is_(None)))
     if not s:
         raise AppError("COMMON_NOT_FOUND")
+    if cu.user.role.code != "owner":  # M5-10：解除抑制需审批（所有者可直接解除）
+        if s.revoked_at:
+            raise AppError("COMMON_INVALID_STATE")
+        from app.org.collab import request_approval
+        r = request_approval(db, "suppression_revoke", object_type="suppression", object_id=s.id,
+                             title=f"解除抑制：{s.value or s.key_hash[:12]}（{s.reason}）", snapshot=body.model_dump(), requester=cu.id)
+        write_audit(db, tenant_id=cu.tenant_id, action="suppression.revoke_request", actor_id=cu.id, object_type="suppression",
+                    object_id=s.id, after={**body.model_dump(), "approval_id": str(r.id)}, request=request)
+        db.commit()
+        return {**SuppressionOut.model_validate(s).model_dump(mode="json"), "approval_id": str(r.id), "pending_approval": True}
     try:
         revoke_suppression(db, s, mode=body.mode, evidence_ref=body.evidence_ref, actor_id=cu.id)
     except AppError:

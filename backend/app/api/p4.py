@@ -329,6 +329,14 @@ def add_note(cid: uuid.UUID, body: NoteIn, request: Request, cu: CurrentUser = D
     c = _conv(db, cid, cu)
     m = Message(conversation_id=c.id, direction="note", body=body.body, sent_by="user", user_id=cu.id, status="note")
     db.add(m)
+    import re as _re  # M8-10：@同事（@邮箱 或 @姓名）
+    tags = {t.lower() for t in _re.findall(r"@([\w.+-]+@[\w-]+\.[\w.]+|[\w\u4e00-\u9fff]{2,20})", body.body)}
+    if tags:
+        from app.crm.notify import notify
+        hit = [u for u in db.scalars(select(User).where(User.is_active.is_(True))) if u.id != cu.id and (u.email.lower() in tags or u.name.lower() in tags)  # noqa: E501
+               and "inbox.read" in u.role.permission_codes]
+        notify(db, "N-28", hit, f"{cu.user.name} 在会话中提到了你", body.body[:200], object_type="conversation", object_id=c.id,
+               action_url=f"/inbox?c={c.id}")
     audit(db, cu, request, "inbox.note", "conversation", c.id)
     db.commit()
     return MsgOut.model_validate(m)

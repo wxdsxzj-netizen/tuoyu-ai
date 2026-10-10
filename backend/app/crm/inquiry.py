@@ -235,10 +235,13 @@ def assign(db: Session, inq: Inquiry, text: str = "", exclude: set | None = None
     """1 老客户归属人 → 2 规则候选 → 3 负载最小（并列轮转）→ 4 无人可用进共享池并提醒经理。"""
     now = now or utcnow()
     exclude = exclude or set()
-    active = {u.id: u for u in users_with(db, "inbox.read")}
+    from app.org.service import available, effective_user
+    active = {u.id: u for u in users_with(db, "inbox.read") if available(u, now)}  # C-05：休假 / 停用不参与分配
     acc = db.get(Account, inq.account_id) if inq.account_id else None
-    if acc and acc.owner_id and acc.owner_id in active and acc.owner_id not in exclude and not inq.reassign_count:
-        return _set(db, inq, acc.owner_id, "owner", None, now)
+    if acc and acc.owner_id and acc.owner_id not in exclude and not inq.reassign_count:
+        eff = effective_user(db, acc.owner_id, now)  # C-06：归属人休假时交给代理人
+        if eff and eff.id in active:
+            return _set(db, inq, eff.id, "owner" if eff.id == acc.owner_id else "delegate", None, now)
     cands, rule = [], None
     for r in db.scalars(select(AssignmentRule).where(AssignmentRule.enabled.is_(True), AssignmentRule.deleted_at.is_(None))
                         .order_by(AssignmentRule.priority, AssignmentRule.created_at)):
@@ -258,6 +261,12 @@ def assign(db: Session, inq: Inquiry, text: str = "", exclude: set | None = None
         notify(db, "N-03", managers(db), f"询盘 {inq.grade} 级无可用成员，已进入团队共享池", inq.peer_email or "", object_type="inquiry",
                object_id=inq.id, action_url="/inquiries", level="warn")
         return "pool"
+    if grab_mode(db) and inq.grade != "D" and not inq.reassign_count:  # M8-06 抢单模式：通知候选人，先到先得
+        inq.assignee_id, inq.assigned_by, inq.status, inq.sla_due_at = None, "grab", "pending_assign", None
+        inq.score_detail = {**(inq.score_detail or {}), "grab_candidates": [str(u.id) for u in cands]}
+        notify(db, "N-31", cands, f"可抢单：{inq.grade} 级询盘", inq.peer_email or "", object_type="inquiry", object_id=inq.id,
+               action_url="/inquiries", level="warn" if inq.grade == "A" else "info")
+        return "grab"
     last = dict(db.execute(select(Inquiry.assignee_id, func.max(Inquiry.assigned_at)).group_by(Inquiry.assignee_id)).all())
     epoch = datetime(1970, 1, 1, tzinfo=ZoneInfo("UTC"))
     pick = min(cands, key=lambda u: (_load(db, u.id, now), last.get(u.id) or epoch, str(u.id)))
@@ -412,3 +421,23 @@ def sla_tick(db: Session, now=None) -> dict:
 
 
 __all__ = ["on_inbound", "assign", "score", "sla_tick", "review", "on_first_response", "User"]
+
+
+def grab_mode(db: Session) -> bool:
+    from app.models import TenantCompliance
+    tc = db.scalar(select(TenantCompliance))
+    return bool(tc and getattr(tc, "inquiry_grab_mode", False))
+
+
+def grab(db: Session, inq: Inquiry, user, now=None) -> Inquiry:
+    """抢单：行锁保证只有一人成功；候选人范围 = 分配时命中的成员。"""
+    from app.core.errors import AppError
+    now = now or utcnow()
+    inq = db.scalar(select(Inquiry).where(Inquiry.id == inq.id).with_for_update())
+    if inq.status != "pending_assign" or inq.assigned_by != "grab":
+        raise AppError("COMMON_ALREADY_TAKEN")
+    cands = (inq.score_detail or {}).get("grab_candidates") or []
+    if cands and str(user.id) not in cands and "crm.all" not in user.role.permission_codes:
+        raise AppError("COMMON_FORBIDDEN")
+    _set(db, inq, user.id, "grab", None, now)
+    return inq

@@ -21,7 +21,6 @@ from app.schemas import (
     Page,
     TenantOut,
     TenantUpdate,
-    TokenOut,
     UserCreate,
     UserUpdate,
     role_out,
@@ -33,24 +32,68 @@ router = APIRouter(prefix="/api/v1")
 
 
 # ---------- 认证 ----------
-@router.post("/auth/login", response_model=TokenOut, tags=["auth"])
+def _issue(db: Session, user: User, request: Request, method: str) -> dict:
+    """登录成功：建立会话、清零失败计数、新 IP 提醒、签发令牌。"""
+    from app.org import security as sec
+    ip = request.client.host if request.client else None
+    with bypass_tenant():
+        user.last_login_at, user.failed_logins, user.locked_until = utcnow(), 0, None
+        sess, new_ip = sec.open_session(db, user, ip, request.headers.get("user-agent"))
+        write_audit(db, tenant_id=user.tenant_id, action="auth.login", actor_id=user.id, request=request,
+                    after={"method": method, "session": str(sess.id), "new_ip": new_ip})
+        if new_ip:
+            from app.core.context import tenant_id_var
+            tok = tenant_id_var.set(user.tenant_id)
+            try:
+                from app.crm.notify import notify
+                notify(db, "N-26", [user.id], "新 IP 登录提醒", f"你的账号刚从 {ip} 登录；如非本人操作，请立即修改密码并下线其他会话。",
+                       object_type="session", object_id=sess.id, action_url="/security", level="warn")
+            finally:
+                tenant_id_var.reset(tok)
+        db.commit()
+    return {"access_token": create_access_token(user.id, user.tenant_id, sess.id), "token_type": "bearer"}
+
+
+@router.post("/auth/login", tags=["auth"])
 def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
+    from app.org import security as sec
     with bypass_tenant():  # 登录时尚无租户上下文，按全局唯一邮箱查找
         user = db.scalar(select(User).where(User.email == body.email.lower(), User.deleted_at.is_(None)))
+    if user:
+        sec.ensure_not_locked(user)
     if not user or not verify_password(body.password, user.password_hash):
         if user:
             with bypass_tenant():
-                write_audit(db, tenant_id=user.tenant_id, action="auth.login", actor_id=user.id,
+                locked = sec.record_failure(user)
+                write_audit(db, tenant_id=user.tenant_id, action="auth.lock" if locked else "auth.login", actor_id=user.id,
                             result="failure", request=request)
                 db.commit()
+            if locked:
+                raise AppError("AUTH_LOCKED")
         raise AppError("AUTH_INVALID_CREDENTIALS")
-    if not user.is_active:
+    if not user.is_active or user.status in ("disabled", "left"):
         raise AppError("AUTH_USER_DISABLED")
+    if user.totp_enabled:
+        return {"mfa_required": True, "mfa_token": sec.mfa_token(user)}
+    return _issue(db, user, request, "password")
+
+
+@router.post("/auth/mfa", tags=["auth"])
+def login_mfa(body: dict, request: Request, db: Session = Depends(get_db)):
+    from app.org import security as sec
+    uid = sec.read_mfa_token(str(body.get("mfa_token", "")))
     with bypass_tenant():
-        user.last_login_at = utcnow()
-        write_audit(db, tenant_id=user.tenant_id, action="auth.login", actor_id=user.id, request=request)
-        db.commit()
-    return TokenOut(access_token=create_access_token(user.id, user.tenant_id))
+        user = db.get(User, uid)
+    if not user or not user.totp_enabled or not user.is_active:
+        raise AppError("AUTH_MFA_INVALID")
+    sec.ensure_not_locked(user)
+    if not sec.totp_verify(sec.get_secret(user) or "", str(body.get("code", ""))):
+        with bypass_tenant():
+            locked = sec.record_failure(user)
+            write_audit(db, tenant_id=user.tenant_id, action="auth.mfa", actor_id=user.id, result="failure", request=request)
+            db.commit()
+        raise AppError("AUTH_LOCKED" if locked else "AUTH_MFA_INVALID")
+    return _issue(db, user, request, "password+totp")
 
 
 @router.get("/auth/me", response_model=MeOut, tags=["auth"])
@@ -122,6 +165,8 @@ def create_user(body: UserCreate, request: Request, cu: CurrentUser = Depends(re
     email = body.email.lower()
     if email_taken(db, email):
         raise AppError("COMMON_ALREADY_EXISTS", details={"field": "email"})
+    from app.org.security import check_password
+    check_password(body.password)
     u = User(email=email, name=body.name, password_hash=hash_password(body.password),
              role_id=_role(db, body.role_code).id, created_by=cu.id)
     db.add(u)
@@ -149,7 +194,14 @@ def update_user(user_id: uuid.UUID, body: UserUpdate, request: Request,
         u.role_id = _role(db, body.role_code).id
     if body.is_active is not None and body.is_active != u.is_active:
         before["is_active"], after["is_active"], u.is_active = u.is_active, body.is_active, body.is_active
+        u.status = "active" if body.is_active else "disabled"
+        if not body.is_active:  # C-03：停用立即失效全部会话
+            from app.org.security import revoke_all
+            revoke_all(db, u.id, "disabled")
     if body.password:
+        from app.org.security import check_password, revoke_all
+        check_password(body.password)
+        revoke_all(db, u.id, "password_reset")
         u.password_hash = hash_password(body.password)
         before["password"] = after["password"] = "***"
     u.version += 1
@@ -169,6 +221,8 @@ def delete_user(user_id: uuid.UUID, request: Request, cu: CurrentUser = Depends(
     if u.role.code == "owner" or u.id == cu.id:
         raise AppError("USER_OWNER_PROTECTED")
     u.deleted_at, u.is_active = utcnow(), False
+    from app.org.security import revoke_all
+    revoke_all(db, u.id, "deleted")
     u.email = f"deleted+{u.id.hex}+{u.email}"[:254]  # 释放邮箱
     write_audit(db, tenant_id=cu.tenant_id, action="user.delete", actor_id=cu.id, object_type="user",
                 object_id=u.id, request=request)

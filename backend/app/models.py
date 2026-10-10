@@ -54,6 +54,21 @@ class User(TenantScoped, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     locale: Mapped[str] = mapped_column(String(8), default="zh-CN")
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # B1：组织、排班、安全
+    status: Mapped[str] = mapped_column(String(12), default="active", server_default="active")  # active / disabled / left
+    department_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    timezone: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    work_days: Mapped[str] = mapped_column(String(16), default="12345", server_default="12345")  # ISO 周几
+    work_start: Mapped[str] = mapped_column(String(5), default="09:00", server_default="09:00")
+    work_end: Mapped[str] = mapped_column(String(5), default="18:00", server_default="18:00")
+    vacation_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    vacation_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    delegate_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    failed_logins: Mapped[int] = mapped_column(default=0, server_default="0")
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    totp_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Fernet 加密
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_false())
+    notify_prefs: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")  # {"muted": [...], "dnd": ["22:00","08:00"]}
     role: Mapped[Role] = relationship(lazy="joined")
 
 
@@ -330,6 +345,7 @@ class TenantCompliance(TenantScoped, Base):
     quote_margin_owner: Mapped[float] = mapped_column(Float, default=8.0, server_default="8")
     quote_discount_manager: Mapped[float] = mapped_column(Float, default=10.0, server_default="10")
     business_tz: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", server_default="Asia/Shanghai")  # SLA 工作时间时区
+    inquiry_grab_mode: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_false())  # M8-06 抢单模式
 
 
 class RegionRule(Base):
@@ -966,3 +982,106 @@ class Invoice(TenantOwned, Base):
     operator: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+
+# ======================= B1：组织、安全与协作 =======================
+class Department(TenantScoped, Base):
+    __tablename__ = "departments"
+    __table_args__ = (UniqueConstraint("tenant_id", "parent_id", "name"),)
+    name: Mapped[str] = mapped_column(String(64))
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    manager_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class Invitation(TenantScoped, Base):
+    __tablename__ = "invitations"
+    email: Mapped[str] = mapped_column(String(254), index=True)
+    role_code: Mapped[str] = mapped_column(String(32))
+    department_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(12), default="pending")  # pending / accepted / revoked
+    invited_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserSession(TenantOwned, Base):
+    __tablename__ = "user_sessions"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class Task(TenantScoped, Base):
+    """待办（C-30）：跟进 / 电话 / LinkedIn / 寄样 / 审批提醒 / 自定义。"""
+    __tablename__ = "tasks"
+    title: Mapped[str] = mapped_column(String(100))
+    task_type: Mapped[str] = mapped_column(String(16), default="custom")
+    assignee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    priority: Mapped[str] = mapped_column(String(8), default="normal")  # low / normal / high
+    status: Mapped[str] = mapped_column(String(10), default="open")  # open / done / cancelled
+    object_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    object_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), default="manual")  # manual / opportunity_stage / kb_pending / ...
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ApprovalPolicy(TenantScoped, Base):
+    """审批策略（C-12）：按审批类型配置审批角色、超时与超时动作。"""
+    __tablename__ = "approval_policies"
+    __table_args__ = (UniqueConstraint("tenant_id", "approval_type"),)
+    approval_type: Mapped[str] = mapped_column(String(32))
+    approver_roles: Mapped[list] = mapped_column(JSONB, default=list)
+    timeout_hours: Mapped[int] = mapped_column(default=24)
+    timeout_action: Mapped[str] = mapped_column(String(12), default="escalate")  # escalate / reject / approve（发送类禁止 approve）
+    allow_self: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class ApprovalRequest(TenantScoped, Base):
+    """统一审批单（C-10/C-13）：新增的审批类型（抑制解除、导出、支持访问）直接用；既有类型在审批中心聚合。"""
+    __tablename__ = "approval_requests"
+    approval_type: Mapped[str] = mapped_column(String(32), index=True)
+    object_type: Mapped[str] = mapped_column(String(32))
+    object_id: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(200))
+    snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
+    requester_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(12), default="pending")  # pending / approved / rejected / expired / escalated
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SupportGrant(TenantScoped, Base):
+    """支持访问授权（M14-16）：租户管理员批准平台支持人员只读访问，最长 72 小时。"""
+    __tablename__ = "support_grants"
+    granted_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    reason: Mapped[str] = mapped_column(String(200))
+    scope: Mapped[str] = mapped_column(String(16), default="read")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ticket_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class DataExport(TenantScoped, Base):
+    """全量数据导出（M14-05）：异步打包 ZIP（JSON + CSV），带水印，7 天后过期。"""
+    __tablename__ = "data_exports"
+    requested_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    scope: Mapped[list] = mapped_column(JSONB, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending_approval / pending / running / ready / failed / expired / rejected  # noqa: E501
+    file_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    counts: Mapped[dict] = mapped_column(JSONB, default=dict)
+    watermark: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)

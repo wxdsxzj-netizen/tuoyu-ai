@@ -42,6 +42,9 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "research.run": ("AI 背调", "Run AI research"),
     "analytics.read": ("查看经营看板", "View dashboards"),
     "billing.read": ("查看点数账本", "View credit ledger"),
+    "org.manage": ("管理部门、邀请、离职交接、审批策略", "Manage org, invitations, handover, approval policies"),
+    "security.manage": ("安全设置：会话管理、支持访问授权、审计导出", "Security: sessions, support access, audit export"),
+    "data.export": ("全量数据导出", "Full data export"),
 }
 
 SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {

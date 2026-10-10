@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 
+from app.api.b1 import public as b1_public
+from app.api.b1 import router as b1_router
 from app.api.billing import router as billing_router
 from app.api.p1 import router as p1_router
 from app.api.p2 import public as p2_public
@@ -98,6 +100,8 @@ app.include_router(p2_router)
 app.include_router(p2_public)
 app.include_router(p3_router)
 app.include_router(p3_public)
+app.include_router(b1_router)
+app.include_router(b1_public)
 app.include_router(billing_router)
 app.include_router(p5_router)
 app.include_router(p4_router)

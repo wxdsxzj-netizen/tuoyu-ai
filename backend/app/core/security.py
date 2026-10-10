@@ -18,10 +18,10 @@ def verify_password(pw: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: uuid.UUID, tenant_id: uuid.UUID) -> str:
+def create_access_token(user_id: uuid.UUID, tenant_id: uuid.UUID, sid: uuid.UUID | None = None) -> str:
     s = get_settings()
     now = datetime.now(UTC)
-    payload = {"sub": str(user_id), "tid": str(tenant_id), "iat": now,
+    payload = {"sub": str(user_id), "tid": str(tenant_id), "iat": now, **({"sid": str(sid)} if sid else {}),
                "exp": now + timedelta(minutes=s.access_token_minutes), "typ": "access"}
     return jwt.encode(payload, s.jwt_secret, algorithm=s.jwt_alg)
 

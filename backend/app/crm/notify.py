@@ -17,7 +17,11 @@ def notify(db: Session, code: str, recipients, title: str, body: str = "", *, ob
     ids = {getattr(r, "id", r) for r in recipients if r}
     n = 0
     since = utcnow() - timedelta(minutes=10)
+    from app.org.collab import muted
     for rid in ids:
+        u = db.get(User, rid)
+        if u is not None and muted(u, code):  # C-21：个人关闭的通知类型不生成（不可关闭类除外）
+            continue
         ex = db.scalar(select(Notification).where(Notification.recipient_id == rid, Notification.code == code,
                                                   Notification.object_id == (str(object_id) if object_id else None),
                                                   Notification.read_at.is_(None), Notification.created_at >= since))

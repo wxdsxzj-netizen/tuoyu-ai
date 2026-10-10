@@ -29,6 +29,8 @@ def create_tenant_with_owner(db: Session, *, tenant_name: str, owner_email: str,
                              password: str, slug: str | None = None,
                              actor_type: str = "platform") -> tuple[Tenant, User]:
     owner_email = owner_email.lower().strip()
+    from app.org.security import check_password
+    check_password(password)
     if email_taken(db, owner_email):
         raise AppError("COMMON_ALREADY_EXISTS", details={"field": "email"})
     slug = slug or (re.sub(r"[^a-z0-9]+", "-", tenant_name.lower()).strip("-")[:40] or "t") + "-" + uuid.uuid4().hex[:6]
