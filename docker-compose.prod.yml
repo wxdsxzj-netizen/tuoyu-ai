@@ -66,6 +66,14 @@ services:
     depends_on: [backend]
     restart: unless-stopped
 
+  # ---- 可选：本地递归 DNS（docker compose --profile dnsbl ...），供黑名单（DNSBL）真实查询使用 ----
+  # Spamhaus 等拒绝来自公共 DNS（8.8.8.8 / 1.1.1.1 / 运营商转发）的查询，必须用自己的递归解析器。
+  # 启用后在 .env.prod 设置 TL_DNSBL_PROVIDER=dns、TL_DNSBL_RESOLVER=unbound
+  unbound:
+    profiles: [dnsbl]
+    image: klutchell/unbound:latest
+    restart: unless-stopped
+
   # ---- 可选：监控（docker compose --profile monitoring ...），只监听本机 127.0.0.1，通过 SSH 隧道访问 ----
   prometheus:
     profiles: [monitoring]

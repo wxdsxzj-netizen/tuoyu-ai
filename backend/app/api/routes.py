@@ -167,6 +167,8 @@ def create_user(body: UserCreate, request: Request, cu: CurrentUser = Depends(re
         raise AppError("COMMON_ALREADY_EXISTS", details={"field": "email"})
     from app.org.security import check_password
     check_password(body.password)
+    from app.b4.billing import check_seat
+    check_seat(db)  # B4 C-04：席位
     u = User(email=email, name=body.name, password_hash=hash_password(body.password),
              role_id=_role(db, body.role_code).id, created_by=cu.id)
     db.add(u)

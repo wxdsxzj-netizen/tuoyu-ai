@@ -34,6 +34,11 @@ import DiscoverPage from './pages/Discover'
 import OutreachToolsPage from './pages/OutreachTools'
 import InsightsPage from './pages/Insights'
 import SharedReportPage from './pages/SharedReport'
+import WidgetsPage from './pages/Widgets'
+import SupportPage from './pages/Support'
+import BillingPlusPage from './pages/BillingPlus'
+import WidgetEmbedPage from './pages/WidgetEmbed'
+import StatusPage from './pages/Status'
 import TodayPage from './pages/Today'
 import ApprovalCenterPage from './pages/ApprovalCenter'
 import OrgPage from './pages/Org'
@@ -61,6 +66,9 @@ function Shell() {
     can('company.read') && { key: '/discover', icon: <FileSearchOutlined />, label: t('menu.discover') },
     can('research.run') && { key: '/research', icon: <FileSearchOutlined />, label: t('menu.research') },
     can('sequence.read') && { key: '/outreach-tools', icon: <FileSearchOutlined />, label: t('menu.outreachTools') },
+    can('inbox.read') && { key: '/widgets', icon: <MessageOutlined />, label: t('menu.widgets') },
+    can('billing.read') && { key: '/billing-plus', icon: <BankOutlined />, label: t('menu.billingPlus') },
+    { key: '/support', icon: <BookOutlined />, label: t('menu.support') },
     can('analytics.read') && { key: '/insights', icon: <FileSearchOutlined />, label: t('menu.insights') },
     can('analytics.read') && { key: '/analytics', icon: <BarChartOutlined />, label: t('menu.analytics') },
     can('kb.read') && { key: '/kb', icon: <BookOutlined />, label: t('menu.kb') },
@@ -113,6 +121,9 @@ function Shell() {
             <Route path="/discover" element={<DiscoverPage />} />
             <Route path="/outreach-tools" element={<OutreachToolsPage />} />
             <Route path="/insights" element={<InsightsPage />} />
+            <Route path="/widgets" element={<WidgetsPage />} />
+            <Route path="/support" element={<SupportPage />} />
+            <Route path="/billing-plus" element={<BillingPlusPage />} />
             <Route path="/billing" element={<BillingPage />} />
             <Route path="/today" element={<TodayPage />} />
             <Route path="/approvals-center" element={<ApprovalCenterPage />} />
@@ -153,6 +164,8 @@ export default function App() {
     <Routes>
       <Route path="/confirm/:token" element={<ConfirmPage />} />
       <Route path="/share/research/:token" element={<SharedReportPage />} />
+      <Route path="/w/:key" element={<WidgetEmbedPage />} />
+      <Route path="/status" element={<StatusPage />} />
       <Route path="/invite/:token" element={<InvitePage />} />
       <Route path="/login" element={me ? <Navigate to="/" /> : <LoginPage />} />
       <Route path="/*" element={me ? <Shell /> : <Navigate to="/login" />} />

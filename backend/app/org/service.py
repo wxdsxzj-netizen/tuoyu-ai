@@ -141,6 +141,10 @@ def accept_invite(db: Session, tok: str, name: str, password: str) -> User:
         if email_taken(db, inv.email):
             raise AppError("COMMON_ALREADY_EXISTS", details={"field": "email"})
         role = db.scalar(select(Role).where(Role.tenant_id == inv.tenant_id, Role.code == inv.role_code))
+        from app.models import Subscription
+        sub = db.scalar(select(Subscription).where(Subscription.tenant_id == inv.tenant_id, Subscription.deleted_at.is_(None)))
+        if sub and (db.scalar(select(func.count()).select_from(User).where(User.tenant_id == inv.tenant_id, User.is_active.is_(True))) or 0) >= sub.seats:  # noqa: E501
+            raise AppError("BILLING_SEATS_EXCEEDED", details={"seats": sub.seats})
         u = User(tenant_id=inv.tenant_id, email=inv.email, name=name, password_hash=hash_password(password), role_id=role.id,
                  department_id=inv.department_id, created_by=inv.invited_by)
         db.add(u)

@@ -20,6 +20,8 @@ celery_app.conf.update(
         "org-hourly": {"task": "org.hourly", "schedule": 3600.0},
         "crm-daily": {"task": "crm.daily", "schedule": crontab(hour=23, minute=0)},
         "b3-daily": {"task": "b3.daily", "schedule": crontab(hour=0, minute=30)},
+        "b4-hourly": {"task": "b4.hourly", "schedule": crontab(minute=20)},
+        "b4-daily": {"task": "b4.daily", "schedule": crontab(hour=1, minute=10)},
     }, task_default_retry_delay=10, timezone="UTC", task_serializer="json",  # noqa: E501
 )
 

@@ -384,3 +384,34 @@ def b3_daily_task():
         write_audit(db, tenant_id=tid, action="b3.daily", actor_type="system", after=r)
         return r
     return _each_tenant(fn, "b3")
+
+
+@celery_app.task(name="b4.hourly")
+def b4_hourly_task():
+    """每小时：工单 SLA 超时标记；到期的解约申请清除数据并出具删除证明。"""
+    from app.b4.success import closure_tick, ticket_sla_tick
+    from app.core.db import SessionLocal
+
+    def fn(db, tid):
+        return {"tickets_breached": ticket_sla_tick(db)}
+    r = _each_tenant(fn, "b4")
+    return {"tenants": r, "purged": closure_tick(SessionLocal)}
+
+
+@celery_app.task(name="b4.daily")
+def b4_daily_task():
+    """每日：数据保留期清理（X2）。每月 1 日：月结（赠送点数结转 + 月度账单）。"""
+    from datetime import date
+
+    from app.b4.billing import month_close_all
+    from app.b4.success import retention_cleanup
+    from app.core.db import SessionLocal
+    db = SessionLocal()
+    try:
+        r = {"retention": retention_cleanup(db)}
+        db.commit()
+    finally:
+        db.close()
+    if date.today().day == 1:
+        r["month_close"] = month_close_all()
+    return r

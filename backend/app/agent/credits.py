@@ -22,6 +22,8 @@ def hold(db: Session, task_id, amount: float, actor_id=None) -> None:
         return
     if balance(db) < amount:
         raise AppError("BILLING_INSUFFICIENT", details={"need": amount, "balance": balance(db)})
+    from app.b4.billing import check_budgets
+    check_budgets(db, amount, actor_id)  # B4：租户 / 部门 / 成员月度预算
     db.add(CreditEntry(entry_type="hold", credits=-amount, quantity=amount, task_id=task_id, actor_id=actor_id, note="任务预占"))
     db.flush()
 
@@ -39,6 +41,9 @@ def consume(db: Session, action: str, qty: float, *, task_id=None, held=False, o
     amount = round(price * qty, 2) if result == "success" else 0.0
     if not held and amount > 0 and balance(db) < amount:
         raise AppError("BILLING_INSUFFICIENT", details={"need": amount, "balance": balance(db)})
+    if not held and amount > 0:
+        from app.b4.billing import check_budgets
+        check_budgets(db, amount, actor_id)
     db.add(CreditEntry(entry_type="consume", action=action, quantity=qty, unit_price=price, credits=0 if held else -amount,
                        task_id=task_id, object_type=object_type, object_id=str(object_id) if object_id else None, result=result,
                        actor_id=actor_id, price_version=PRICE_VERSION, note=f"{amount} 点" if held else None))

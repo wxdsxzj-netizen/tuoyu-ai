@@ -235,9 +235,22 @@ def _listed(name: str) -> bool:
         return _dnsbl_resolver(name)
     if get_settings().dnsbl_provider != "dns":
         return False  # mock：不发起外部查询
-    from app.outreach.dns_check import _query
+    res = get_settings().dnsbl_resolver
     try:
-        return bool(_query(name, "A"))
+        if res:
+            import socket
+
+            import dns.resolver
+            r = dns.resolver.Resolver(configure=False)
+            r.nameservers = [socket.gethostbyname(res)]
+            try:
+                ans = r.resolve(name, "A", lifetime=6)
+            except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+                return False
+            # 127.255.255.x = 查询被拒（公共解析器 / 超限），不算列入
+            return any(not a.to_text().startswith("127.255.255.") for a in ans)
+        from app.outreach.dns_check import _query
+        return any(not a.startswith("127.255.255.") for a in _query(name, "A"))
     except Exception:  # noqa: BLE001
         return False
 

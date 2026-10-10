@@ -29,7 +29,7 @@ def _iso(v):
 def inq_out(db, i: Inquiry, detail=False) -> dict:
     u = db.get(User, i.assignee_id) if i.assignee_id else None
     d = {k: getattr(i, k) for k in ("status", "authenticity_score", "clarity_score", "fit_score", "score", "grade", "risk_flags", "language",  # noqa: E501
-                                     "country", "assigned_by", "reassign_count", "message_count", "sla_minutes", "peer_email", "closed_reason")}  # noqa: E501
+                                     "country", "assigned_by", "reassign_count", "message_count", "sla_minutes", "peer_email", "closed_reason", "source_channel")}  # noqa: E501
     d.update(id=str(i.id), conversation_id=str(i.conversation_id), assignee_id=str(i.assignee_id) if i.assignee_id else None,
              assignee_name=u.name if u else None, sla_due_at=_iso(i.sla_due_at), assigned_at=_iso(i.assigned_at),
              first_response_at=_iso(i.first_response_at), created_at=_iso(i.created_at),

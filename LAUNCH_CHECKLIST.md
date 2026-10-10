@@ -56,3 +56,9 @@
 - [ ] `TL_LLM_PRIMARY` 从 mock 改为 qwen / deepseek
 - [ ] 第一个试点租户的第一条序列由你审批后再启动
 - [ ] 告警是否发送邮件（会产生真实对外邮件，默认不配置）
+
+## B4 新增
+- [ ] 确认套餐价格与赠送点数（默认：入门 ¥999/月 2 席 300 点；成长 ¥2999/月 5 席 1200 点；专业 ¥6999/月 15 席 4000 点）
+- [ ] 在线支付：如需开通，提供支付宝 / 微信支付 / Stripe 商户资质（未提供前保持 `TL_PAYMENT_PROVIDER=mock`，线下收款 + 手工标记）
+- [ ] 律师审阅 `backend/legal/` 下隐私政策、DPA、子处理者清单、Cookie 政策
+- [ ] 如启用 DNSBL 真实查询：`--profile dnsbl` + `TL_DNSBL_PROVIDER=dns` + `TL_DNSBL_RESOLVER=unbound`

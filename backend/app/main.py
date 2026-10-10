@@ -14,6 +14,9 @@ from app.api.b1 import router as b1_router
 from app.api.b2 import router as b2_router
 from app.api.b3 import public as b3_public
 from app.api.b3 import router as b3_router
+from app.api.b4 import plat as b4_plat
+from app.api.b4 import public as b4_public
+from app.api.b4 import router as b4_router
 from app.api.billing import router as billing_router
 from app.api.p1 import router as p1_router
 from app.api.p2 import public as p2_public
@@ -40,6 +43,9 @@ if get_settings().env == "prod":
         raise SystemExit("生产配置不完整：" + "；".join(_problems))
 
 app = FastAPI(title="拓域 AI API", version="0.1.0")
+from app.core.idempotency import IdempotencyMiddleware  # noqa: E402
+
+app.add_middleware(IdempotencyMiddleware)
 app.add_middleware(CORSMiddleware, allow_origins=get_settings().cors_origins.split(","),
                    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.add_exception_handler(AppError, app_error_handler)
@@ -107,6 +113,9 @@ app.include_router(b1_router)
 app.include_router(b2_router)
 app.include_router(b3_router)
 app.include_router(b3_public)
+app.include_router(b4_router)
+app.include_router(b4_public)
+app.include_router(b4_plat)
 app.include_router(b1_public)
 app.include_router(billing_router)
 app.include_router(p5_router)

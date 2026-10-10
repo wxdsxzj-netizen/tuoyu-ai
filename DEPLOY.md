@@ -214,5 +214,30 @@ bash deploy/scripts/smoke.sh https://app.example.com
 
 - `TL_FX_PROVIDER=ecb`：使用欧洲央行每日参考汇率（公开数据，只做匿名 GET，不发送任何用户数据）；默认 `mock`。每日任务 `crm.daily` 刷新。
 - OCR：后端镜像已安装 `tesseract-ocr`（chi_sim + eng），图片文档导入和名片背调直接可用，无需额外配置。
-- `TL_DNSBL_PROVIDER=dns`：每日（`b3.daily`）通过 DNS 查询 Spamhaus DBL / SURBL；域名被列入时自动暂停该域名下的发件箱并通知管理员。默认 `mock` 不查询。
+- **黑名单（DNSBL）真实查询**：Spamhaus / SURBL 会拒绝来自公共 DNS（8.8.8.8、1.1.1.1、云厂商默认转发 DNS）的查询，返回 127.255.255.x 拒绝码，系统会把它当作“未列入”，因此必须使用自己的递归解析器：
+  1. 启动时加上 profile：`docker compose -f docker-compose.prod.yml --profile dnsbl up -d`（会启动 `unbound` 容器，直接向根服务器递归查询，不经过公共 DNS）。
+  2. `.env.prod` 设置 `TL_DNSBL_PROVIDER=dns`、`TL_DNSBL_RESOLVER=unbound`，然后 `docker compose ... up -d backend worker beat`。
+  3. 验证：`docker compose exec backend python -c "from app.b3.outreach import _listed; print(_listed('2.0.0.127.zen.spamhaus.org'))"` 应输出 `True`（官方测试地址）。
+  4. 每日 `b3.daily` 检查所有发信域名；被列入会自动暂停该域名下的发件箱和域名，并站内通知管理员。Spamhaus 免费查询有日量限制（商业用途量大时需购买 DQS 密钥）。
 - `TL_TRACKING_HOST`：追踪域名 CNAME 目标（启用点击追踪时用）；`TL_CREDIT_PRICE_CNY`：单位经济里 1 点折合人民币。
+
+## 16. 打开 / 点击追踪（默认关闭）
+
+- 系统默认**不插入**打开像素，也**不改写**链接；序列里的“追踪策略”目前只是配置项，不会生效。
+- 隐私与送达取舍：
+  - 打开追踪依赖远程图片，Apple Mail 隐私保护、Gmail 图片代理会让数据失真；欧盟 / 英国（GDPR、ePrivacy）下属于设备信息读取，需事先同意，系统对这些收件人强制关闭。
+  - 点击追踪会把链接改写到追踪域名（`TL_TRACKING_HOST`），共享或新域名常被反垃圾系统扣分，影响进箱率。
+  - 冷邮件阶段以“回复率”为主指标，不依赖打开率。
+- 如将来确需启用，要先配好追踪域名 CNAME（“触达工具 → 域名规划与黑名单”可检查），并在隐私政策里写明。
+
+## 17. B4：套餐、询盘组件、客户成功与数据主权
+
+- **套餐**：首次设置订阅时自动写入入门 / 成长 / 专业三档默认套餐（可用 `POST /api/v1/platform/plans:seed`）。开通：
+  `curl -XPUT -H "X-Platform-Admin-Token: $T" -H 'Content-Type: application/json' https://$APP_DOMAIN/api/v1/platform/tenants/<slug>/subscription -d '{"plan_code":"starter","seats":3}'`。
+  未设置订阅的租户按试点处理（席位不限、点数手动充值）。每月 1 日 `b4.daily` 自动月结（结转 + 月度账单）。
+- **在线支付**：`TL_PAYMENT_PROVIDER=mock`，只在本系统标记已付款、不扣款。接入支付宝 / 微信 / Stripe 需商户资质，届时再加适配器。
+- **询盘组件**：后台“询盘组件”新建表单或聊天，复制嵌入代码到官网 `</body>` 前。访客页 `/w/<key>` 已在 Caddy / Nginx 模板中放开 iframe 嵌入（`frame-ancestors *`），来源白名单在后端按组件校验。表单与聊天不会发送任何邮件或外部消息。
+- **服务状态页**：`https://$APP_DOMAIN/status`，事件通过平台接口发布（见 RUNBOOK.md）。
+- **法务模板**：`/api/v1/public/legal/<slug>/{privacy|dpa|subprocessors|cookies}`，上线前请律师审阅 `backend/legal/*.md`。
+- **解约**：`TL_CLOSURE_GRACE_DAYS=30`；`b4.hourly` 清除到期租户并生成删除证明。
+- **运维文档**：RUNBOOK.md（降级矩阵、告警处理、安全事件）、LIMITS.md（限额总表）；负载测试：`python deploy/scripts/loadtest.py https://$APP_DOMAIN <token> 20 500`（避开业务高峰）。

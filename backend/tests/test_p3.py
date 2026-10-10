@@ -312,6 +312,16 @@ def test_content_qa():
 
 
 # ======================= 序列端到端（本地 SMTP 收信器） =======================
+def _grant(h, amount=50.0):
+    from app.agent import credits
+    from app.core.db import SessionLocal, tenant_context
+    db = SessionLocal()
+    with tenant_context(tid_of(h)):
+        credits.grant(db, amount, note="测试充值", operator="test")
+        db.commit()
+    db.close()
+
+
 def setup_outreach(client, sink, h):
     ready_tenant(client, h)
     for t, title, content in (("company_profile", "Ningbo Valve Co.", "valve maker since 2005"), ("product", "Ball valves", "DN15-DN300"),
@@ -330,6 +340,7 @@ def test_sequence_end_to_end(client):
     _, ah = add_user(client, h, "admin@a.com", "admin")
     with Sink() as sink:
         mb = setup_outreach(client, sink, h)
+        _grant(h)  # B4：AI 写信按 0.1 点/封计费
         # 启动检查：DNS 不通过 + 无发件箱 → 列出问题（AC-7-21）
         s0 = client.post(f"{P}/sequences", headers=h, json={"name": "空序列"}).json()
         r = client.post(f"{P}/sequences/{s0['id']}:submit", headers=h)
@@ -434,6 +445,7 @@ def test_reply_categories_ooo_unsub_and_imap(client):
     h = register(client, "o@a.com")
     with Sink() as sink:
         mb = setup_outreach(client, sink, h)
+        _grant(h)  # B4：AI 写信按 0.1 点/封计费
         assert client.post(f"{P}/sequences", headers=h, json={"name": "S", "mailbox_ids": [mb["id"]], "autonomy": "L2"}).status_code == 403
         assert client.put(f"{P}/outreach/settings", headers=h, json={"l2_auto_approve": True}).status_code == 200
         seq = client.post(f"{P}/sequences", headers=h, json={"name": "S", "mailbox_ids": [mb["id"]], "autonomy": "L2"}).json()

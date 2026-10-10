@@ -93,6 +93,8 @@ def ensure_draft(db: Session, e: Enrollment, seq: Sequence, step: SequenceStep) 
         return d
     contact = db.get(Contact, e.contact_id)
     mb = db.get(Mailbox, e.mailbox_id or (seq.mailbox_ids[0] if seq.mailbox_ids else uuid.uuid4()))
+    if step.mode == "ai":  # B4：AI 写信按 0.1 点/封计量；序列级点数预算用尽即拦截
+        charge_ai_write(db, seq, d.id if d else None, e)
     from app.b3 import outreach as b3
     variant = b3.pick_variant(step, e.id)  # B3：A/B 变体按报名 ID 稳定分配
     lang = b3.language_for(seq, contact, contact.company)  # B3：language=auto 时按收件人国家选语言
@@ -113,6 +115,24 @@ def ensure_draft(db: Session, e: Enrollment, seq: Sequence, step: SequenceStep) 
         db.add(d)
     db.flush()
     return d
+
+
+def charge_ai_write(db: Session, seq: Sequence, draft_id, e: Enrollment):
+    from app.agent import credits
+    price = credits.PRICES["AI_WRITE"]
+    if seq.credit_budget is not None and (seq.credits_used or 0) + price > seq.credit_budget + 1e-9:
+        raise AppError("SEQ_CREDIT_BUDGET", details={"budget": seq.credit_budget, "used": seq.credits_used})
+    credits.consume(db, "AI_WRITE", 1, object_type="sequence", object_id=seq.id, actor_id=seq.owner_id)
+    seq.credits_used = round((seq.credits_used or 0) + price, 2)
+
+
+def _budget_pause(db, seq, e, code, now):
+    seq.status, seq.paused_reason = "paused", "credit_budget" if code == "SEQ_CREDIT_BUDGET" else "credits"
+    event(db, e, "deferred", code)
+    from app.crm.notify import managers, notify
+    notify(db, "N-08", [seq.owner_id, *managers(db)], f"序列「{seq.name}」已暂停：{'序列点数预算用尽' if code == 'SEQ_CREDIT_BUDGET' else '点数余额不足'}",  # noqa: E501
+           "AI 写信按 0.1 点/封计费。请提高序列预算或充值后恢复序列。", object_type="sequence", object_id=seq.id, action_url="/sequences", level="urgent")  # noqa: E501
+    return "budget"
 
 
 # ---------------- 发件箱选择 ----------------
@@ -192,7 +212,12 @@ def process_enrollment(db: Session, e: Enrollment, now: datetime, rng: random.Ra
     if seq.daily_cap and b3.sent_today(db, seq, now) >= seq.daily_cap:  # B3 序列级每日上限
         _defer(db, e, now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1, hours=1), "SEQ_DAILY_CAP")
         return "daily_cap"
-    draft = ensure_draft(db, e, seq, step)
+    try:
+        draft = ensure_draft(db, e, seq, step)
+    except AppError as ex:
+        if ex.code in ("SEQ_CREDIT_BUDGET", "BILLING_INSUFFICIENT"):
+            return _budget_pause(db, seq, e, ex.code, now)
+        raise
     if draft.status != "approved":
         if (e.last_gate or {}).get("awaiting") != draft.id.hex:
             e.last_gate = {**(e.last_gate or {}), "awaiting": draft.id.hex}
@@ -319,7 +344,13 @@ def pregenerate(db: Session, now: datetime, horizon_h: int = 24, limit: int = 10
             continue
         step = next((s for s in steps_of(db, seq.id) if s.step_no == e.current_step), None)
         if step and not db.scalar(select(MessageDraft.id).where(MessageDraft.enrollment_id == e.id, MessageDraft.step_no == step.step_no)):
-            ensure_draft(db, e, seq, step)
+            try:
+                ensure_draft(db, e, seq, step)
+            except AppError as ex:
+                if ex.code not in ("SEQ_CREDIT_BUDGET", "BILLING_INSUFFICIENT"):
+                    raise
+                _budget_pause(db, seq, e, ex.code, now)
+                continue
             n += 1
     return n
 

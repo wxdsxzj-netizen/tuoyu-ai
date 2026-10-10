@@ -127,6 +127,8 @@ def test_discovery_icp_score_lookalike_semantic_exclusions_lists_saved(client):
 def test_sequence_templates_branch_ab_language_daily_cap_referral(client):
     h = register(client, "o@a.com")
     ready_tenant(client, h)
+    from tests.test_p5 import topup
+    topup(client, h, 20)
     assert len(client.get(f"{P}/sequence-templates", headers=h).json()) >= 20
     s = client.post(f"{P}/sequences:from-template", headers=h, json={"template_key": "distributor_intro"}).json()
     seq = client.get(f"{P}/sequences/{s['id']}", headers=h).json()

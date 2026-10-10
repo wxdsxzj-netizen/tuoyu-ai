@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql.expression import false as sa_false
 
 from app.core.db import Base, TenantOwned, TenantScoped, TimestampMixin, utcnow
+from app.core.enc import EncryptedJSON, EncryptedString
 
 role_permissions = Table(
     "role_permissions", Base.metadata,
@@ -226,7 +227,7 @@ class Contact(TenantScoped, Base):
     do_not_contact_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     account_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     company: Mapped[Company | None] = relationship(lazy="joined")
-    whatsapp: Mapped[str | None] = mapped_column(String(32), nullable=True)  # B3 M2-03
+    whatsapp: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)  # B3 M2-03；B4 字段级加密
 
 
 class ImportJob(TenantScoped, Base):
@@ -341,7 +342,7 @@ class TenantCompliance(TenantScoped, Base):
     privacy_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
     footer_language: Mapped[str] = mapped_column(String(8), default="en")
     l2_auto_approve: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_false())  # 试点默认关闭
-    bank_info: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 收款银行（PI 用）
+    bank_info: Mapped[dict | None] = mapped_column(EncryptedJSON, nullable=True)  # 收款银行（PI 用）；B4 字段级加密
     quote_margin_manager: Mapped[float] = mapped_column(Float, default=15.0, server_default="15")  # BR-10-06 默认值，可按租户配置
     quote_margin_owner: Mapped[float] = mapped_column(Float, default=8.0, server_default="8")
     quote_discount_manager: Mapped[float] = mapped_column(Float, default=10.0, server_default="10")
@@ -839,7 +840,7 @@ class ProformaInvoice(TenantScoped, Base):
     pi_no: Mapped[str] = mapped_column(String(32))
     quote_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("quotes.id"), index=True)
     account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    bank_info: Mapped[dict] = mapped_column(JSONB)
+    bank_info: Mapped[dict] = mapped_column(EncryptedJSON)  # B4 字段级加密
     payment_terms: Mapped[str | None] = mapped_column(String(256), nullable=True)
     delivery_terms: Mapped[str | None] = mapped_column(String(256), nullable=True)
     total_minor: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -1338,3 +1339,149 @@ class BlacklistCheck(TenantScoped, Base):
     listed_on: Mapped[list] = mapped_column(JSONB, default=list)
     checked: Mapped[list] = mapped_column(JSONB, default=list)
     provider: Mapped[str] = mapped_column(String(16), default="mock")
+
+
+# ======================= B4：计费套餐、入站组件、客户成功与数据主权 =======================
+class Plan(TimestampMixin, Base):
+    """套餐（全局，平台管理员维护）。价格单位：分。"""
+    __tablename__ = "plans"
+    code: Mapped[str] = mapped_column(String(32), unique=True)
+    name: Mapped[str] = mapped_column(String(64))
+    monthly_fee_minor: Mapped[int] = mapped_column(Integer, default=0)
+    seat_fee_minor: Mapped[int] = mapped_column(Integer, default=0)
+    included_seats: Mapped[int] = mapped_column(Integer, default=1)
+    included_credits: Mapped[float] = mapped_column(Float, default=0)
+    rollover_pct: Mapped[int] = mapped_column(Integer, default=100)  # 未用赠送点数可结转比例（只结转 1 个月）
+    features: Mapped[dict] = mapped_column(JSONB, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Subscription(TenantScoped, Base):
+    __tablename__ = "subscriptions"
+    plan_code: Mapped[str] = mapped_column(String(32))
+    seats: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(16), default="active")  # trial / active / past_due / cancelled
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    pending_plan: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 降级在下个周期生效
+    last_closed_period: Mapped[str | None] = mapped_column(String(7), nullable=True)
+
+
+class Budget(TenantScoped, Base):
+    """五级预算（M13-05）：tenant / department / user / sequence / task；月度点数上限。"""
+    __tablename__ = "budgets"
+    scope: Mapped[str] = mapped_column(String(12))
+    scope_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    monthly_limit: Mapped[float] = mapped_column(Float)
+    alert_pct: Mapped[int] = mapped_column(Integer, default=80)
+    hard: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class PriceNotice(TimestampMixin, Base):
+    """调价通知（M13-10）：生效日至少提前 30 天。"""
+    __tablename__ = "price_notices"
+    title: Mapped[str] = mapped_column(String(128))
+    body: Mapped[str] = mapped_column(Text)
+    changes: Mapped[dict] = mapped_column(JSONB, default=dict)
+    effective_on: Mapped[date] = mapped_column(Date)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Widget(TenantScoped, Base):
+    """询盘表单 / 在线聊天嵌入组件（M9-04 / M9-11 / M9-12）。"""
+    __tablename__ = "widgets"
+    name: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(8), default="form")  # form / chat
+    public_key: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    fields: Mapped[list] = mapped_column(JSONB, default=list)
+    allowed_origins: Mapped[list] = mapped_column(JSONB, default=list)
+    consent_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cookie_banner: Mapped[bool] = mapped_column(Boolean, default=True)
+    ai_reception: Mapped[bool] = mapped_column(Boolean, default=False)
+    routing: Mapped[dict] = mapped_column(JSONB, default=dict)  # {owner_id, keywords: {kw: user_id}}
+    greeting: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class WidgetSession(TenantScoped, Base):
+    __tablename__ = "widget_sessions"
+    widget_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), index=True)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    visitor_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    visitor_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    mode: Mapped[str] = mapped_column(String(8), default="ai")  # ai / human / closed
+    consent: Mapped[dict] = mapped_column(JSONB, default=dict)
+    ip_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    messages: Mapped[list] = mapped_column(JSONB, default=list)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Ticket(TenantScoped, Base):
+    """工单（M15-09 / M15-03）。"""
+    __tablename__ = "tickets"
+    ticket_no: Mapped[str] = mapped_column(String(20), index=True)
+    subject: Mapped[str] = mapped_column(String(200))
+    category: Mapped[str] = mapped_column(String(16), default="question")
+    priority: Mapped[str] = mapped_column(String(2), default="P3")
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open / pending_customer / resolved / closed
+    messages: Mapped[list] = mapped_column(JSONB, default=list)
+    first_response_due: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    resolve_due: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    first_response_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    breached: Mapped[list] = mapped_column(JSONB, default=list)
+    csat: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class Incident(TimestampMixin, Base):
+    """服务状态事件 / 安全事件（M15-07 / M14-14），全局。"""
+    __tablename__ = "incidents"
+    kind: Mapped[str] = mapped_column(String(10), default="service")  # service / security
+    title: Mapped[str] = mapped_column(String(200))
+    severity: Mapped[str] = mapped_column(String(4), default="S3")
+    status: Mapped[str] = mapped_column(String(16), default="investigating")
+    components: Mapped[list] = mapped_column(JSONB, default=list)
+    affected_tenants: Mapped[list] = mapped_column(JSONB, default=list)
+    updates: Mapped[list] = mapped_column(JSONB, default=list)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    notify_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tenants_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    public: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class TenantClosure(TenantScoped, Base):
+    """解约（M14-06）：申请 → 冷静期（可撤回）→ 清除 → 删除证明。"""
+    __tablename__ = "tenant_closures"
+    status: Mapped[str] = mapped_column(String(12), default="pending")  # pending / cancelled / purged
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    purge_after: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    export_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class DeletionCertificate(TimestampMixin, Base):
+    """删除证明（全局保留，不含业务数据）。"""
+    __tablename__ = "deletion_certificates"
+    cert_no: Mapped[str] = mapped_column(String(32), unique=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    tenant_name: Mapped[str] = mapped_column(String(128))
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    purged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    counts: Mapped[dict] = mapped_column(JSONB, default=dict)
+    backup_note: Mapped[str] = mapped_column(Text)
+    digest: Mapped[str] = mapped_column(String(64))
+
+
+class IdempotencyKey(Base):
+    """幂等键（G-06）：同一用户 24 小时内重复提交返回首次结果。"""
+    __tablename__ = "idempotency_keys"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scope: Mapped[str] = mapped_column(String(64), index=True)  # tenant:user
+    key: Mapped[str] = mapped_column(String(128))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    status_code: Mapped[int] = mapped_column(Integer)
+    body: Mapped[bytes] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    __table_args__ = (UniqueConstraint("scope", "key", name="uq_idem_scope_key"),)

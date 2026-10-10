@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     fx_provider: str = "mock"  # mock：内置参考汇率，不访问外网；ecb：欧洲央行每日参考汇率（公开数据）
     tracking_host: str = "track.tuoyu.example"  # 追踪域名 CNAME 目标（启用点击追踪时）
     credit_price_cny: float = 0.1  # 单位经济：1 点折合人民币
+    payment_provider: str = "mock"  # 在线支付：mock（本地模拟，不产生真实扣款）；真实渠道需商户资质
+    closure_grace_days: int = 30  # 解约冷静期（天），期满清除数据并出具删除证明
+    dnsbl_resolver: str | None = None  # DNSBL 专用递归解析器（主机名或 IP，如 compose 里的 unbound）；为空用系统 DNS
     dnsbl_provider: str = "mock"  # mock：不查询；dns：通过 DNS 查询公共黑名单（生产建议开启）
     fx_ecb_url: str = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
     pilot_grant_credits: float = 0.0  # 新租户首次使用时自动发放的点数；默认 0 = 只能由平台管理员手动充值

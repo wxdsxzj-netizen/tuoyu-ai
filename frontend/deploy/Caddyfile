@@ -18,6 +18,13 @@
 		-Server
 	}
 
+	# 询盘表单 / 在线聊天访客页 /w/<key> 允许被客户官网 iframe 嵌入（来源白名单在后端按组件校验）
+	@widget path /w/*
+	header @widget {
+		-X-Frame-Options
+		Content-Security-Policy "frame-ancestors *"
+	}
+
 	# /metrics 不对公网开放（Prometheus 在内网直接抓 backend:8000/metrics）
 	@metrics path /metrics
 	respond @metrics 404

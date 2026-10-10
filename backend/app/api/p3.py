@@ -497,6 +497,7 @@ class SequenceIn(BaseModel):
     window_start: int = Field(8, ge=0, le=23)
     window_end: int = Field(17, ge=1, le=24)
     daily_cap: int | None = Field(None, ge=1, le=10000)  # B3
+    credit_budget: float | None = Field(None, ge=0, le=1000000)  # B4：AI 写信点数预算
     tracking: dict | None = None  # B3 {open: bool, click: bool}
     steps: list[StepIn] | None = None
 
@@ -518,6 +519,7 @@ class SequencePatch(BaseModel):
     window_start: int | None = Field(None, ge=0, le=23)
     window_end: int | None = Field(None, ge=1, le=24)
     daily_cap: int | None = Field(None, ge=1, le=10000)
+    credit_budget: float | None = Field(None, ge=0, le=1000000)
     tracking: dict | None = None
     language: str | None = Field(None, max_length=8)
 
@@ -550,6 +552,8 @@ class SequenceOut(ORM):
     window_start: int
     window_end: int
     daily_cap: int | None = None
+    credit_budget: float | None = None
+    credits_used: float = 0
     tracking: dict | None = None
     template_key: str | None = None
     paused_reason: str | None
