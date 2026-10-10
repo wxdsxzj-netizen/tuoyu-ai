@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { Layout, Menu, Dropdown, Spin, Space, Select, Typography } from 'antd'
-import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined, BookOutlined, AimOutlined, BankOutlined, ContactsOutlined, ImportOutlined } from '@ant-design/icons'
+import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined, BookOutlined, AimOutlined, BankOutlined, ContactsOutlined, ImportOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from './auth'
 import i18n, { LOCALE_KEY } from './i18n'
@@ -15,6 +15,7 @@ import IcpPage from './pages/Icp'
 import CompaniesPage from './pages/Companies'
 import ContactsPage from './pages/Contacts'
 import ImportsPage from './pages/Imports'
+import CompliancePage from './pages/Compliance'
 
 function Shell() {
   const { me, can, logout } = useAuth()
@@ -28,6 +29,7 @@ function Shell() {
     can('company.read') && { key: '/companies', icon: <BankOutlined />, label: t('menu.companies') },
     can('company.read') && { key: '/contacts', icon: <ContactsOutlined />, label: t('menu.contacts') },
     can('import.run') && { key: '/imports', icon: <ImportOutlined />, label: t('menu.imports') },
+    can('compliance.read') && { key: '/compliance', icon: <SafetyCertificateOutlined />, label: t('menu.compliance') },
     can('user.read') && { key: '/users', icon: <TeamOutlined />, label: t('menu.users') },
     can('tenant.read') && { key: '/tenant', icon: <SettingOutlined />, label: t('menu.tenant') },
     can('audit.read') && { key: '/audit', icon: <AuditOutlined />, label: t('menu.audit') },
@@ -57,6 +59,7 @@ function Shell() {
             <Route path="/companies" element={<CompaniesPage />} />
             <Route path="/contacts" element={<ContactsPage />} />
             <Route path="/imports" element={<ImportsPage />} />
+            <Route path="/compliance" element={<CompliancePage />} />
             <Route path="/users" element={<UsersPage />} />
             <Route path="/tenant" element={<TenantPage />} />
             <Route path="/audit" element={<AuditPage />} />

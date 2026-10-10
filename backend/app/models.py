@@ -173,6 +173,8 @@ class Company(TenantScoped, Base):
     owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     source: Mapped[str] = mapped_column(String(32), default="manual")  # manual/import/<provider>
     contact_count: Mapped[int] = mapped_column(Integer, default=0)
+    sanction_status: Mapped[str] = mapped_column(String(16), default="unscreened")  # unscreened / clear / pending / confirmed
+    sanction_screened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Contact(TenantScoped, Base):
@@ -196,6 +198,12 @@ class Contact(TenantScoped, Base):
     language: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source: Mapped[str] = mapped_column(String(32), default="manual")
     source_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    email_reason_codes: Mapped[list[str]] = mapped_column(ARRAY(String(32)), default=list)
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_role_email: Mapped[bool] = mapped_column(Boolean, default=False)
+    subscriber_type: Mapped[str] = mapped_column(String(16), default="unknown")  # corporate / individual / unknown
+    lawful_basis: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    sanction_status: Mapped[str] = mapped_column(String(16), default="unscreened")  # unscreened / clear / pending / confirmed
     company: Mapped[Company | None] = relationship(lazy="joined")
 
 
@@ -215,3 +223,172 @@ class ImportJob(TenantScoped, Base):
     failed: Mapped[int] = mapped_column(Integer, default=0)
     errors: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # [{row, field, code, message}]
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ======================= P2：验证与合规 =======================
+class EmailVerification(Base):
+    """全局邮箱验证缓存（地址级事实，不含租户信息；24 小时内复用，M5-01）。"""
+    __tablename__ = "email_verifications"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email_normalized: Mapped[str] = mapped_column(String(254), index=True)
+    status: Mapped[str] = mapped_column(String(16))  # valid / catch_all / risky / invalid / unknown
+    reason_codes: Mapped[list[str]] = mapped_column(ARRAY(String(32)), default=list)
+    provider: Mapped[str] = mapped_column(String(32))
+    is_role: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_disposable: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_free: Mapped[bool] = mapped_column(Boolean, default=False)
+    raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class GlobalBounce(Base):
+    """平台级历史退信库（只存哈希与计数，不记录来源租户）。"""
+    __tablename__ = "global_bounces"
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    bounce_type: Mapped[str] = mapped_column(String(16), default="hard")
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    first_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Suppression(TenantScoped, Base):
+    """租户级抑制名单（M5-04）。DSR 删除来源只存哈希（value 为空）。"""
+    __tablename__ = "suppressions"
+    __table_args__ = (Index("ix_supp_lookup", "tenant_id", "key_type", "key_hash"),)
+    key_type: Mapped[str] = mapped_column(String(16))  # email / domain / company / phone
+    value: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    key_hash: Mapped[str] = mapped_column(String(64))
+    reason: Mapped[str] = mapped_column(String(16))  # unsubscribe / complaint / hard_bounce / manual / dsr / compliance
+    channels: Mapped[list[str]] = mapped_column(ARRAY(String(16)), default=lambda: ["all"])
+    source_ref: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class GlobalSuppression(Base):
+    """平台级抑制（BR-5-06/08）：对所有租户生效，不暴露来源租户。"""
+    __tablename__ = "global_suppressions"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    key_type: Mapped[str] = mapped_column(String(16))
+    key_hash: Mapped[str] = mapped_column(String(64), index=True)
+    reason: Mapped[str] = mapped_column(String(32))  # complaint_multi_tenant / spam_trap / unsubscribe_all / object
+    channels: Mapped[list[str]] = mapped_column(ARRAY(String(16)), default=lambda: ["all"])
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ComplaintEvent(Base):
+    """投诉事件（用于判断 90 天内 ≥ 2 个租户投诉 → 平台级抑制）。只存哈希。"""
+    __tablename__ = "complaint_events"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    key_hash: Mapped[str] = mapped_column(String(64), index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ConsentRecord(TenantScoped, Base):
+    __tablename__ = "consent_records"
+    subject: Mapped[str] = mapped_column(String(320), index=True)  # 规范化邮箱或号码
+    channel: Mapped[str] = mapped_column(String(32), default="email_marketing")
+    basis: Mapped[str] = mapped_column(String(32))  # consent / legitimate_interest / contract / existing_customer
+    evidence_type: Mapped[str] = mapped_column(String(16))  # form / chat / inquiry / offline / import
+    evidence_ref: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LiaRecord(TenantScoped, Base):
+    """欧盟 / 英国正当利益评估（M5-06）。"""
+    __tablename__ = "lia_records"
+    purpose: Mapped[str] = mapped_column(Text)
+    data_categories: Mapped[list[str]] = mapped_column(ARRAY(String(64)), default=list)
+    data_sources: Mapped[str] = mapped_column(Text, default="")
+    balancing_test: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active / archived
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TenantCompliance(TenantScoped, Base):
+    """租户合规设置：发件人身份与实体地址（CAN-SPAM）、隐私联系邮箱。"""
+    __tablename__ = "tenant_compliance"
+    __table_args__ = (UniqueConstraint("tenant_id"),)
+    sender_legal_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    postal_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    privacy_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    footer_language: Mapped[str] = mapped_column(String(8), default="en")
+
+
+class RegionRule(Base):
+    """地区规则（平台级，版本化 + 双人复核，M5-05/13）。country_code='*' 为默认规则。"""
+    __tablename__ = "region_rules"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    country_code: Mapped[str] = mapped_column(String(2), index=True)
+    subscriber_type: Mapped[str] = mapped_column(String(16), default="unknown")  # corporate / individual / unknown
+    cold_email: Mapped[str] = mapped_column(String(20))  # allow / approval / consent_required / deny
+    required_elements: Mapped[list[str]] = mapped_column(ARRAY(String(32)), default=list)  # address / unsubscribe / identity
+    requires_lia: Mapped[bool] = mapped_column(Boolean, default=False)
+    default_frequency: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reason_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(16), default="published")  # draft / published / superseded
+    submitted_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SanctionListVersion(Base):
+    __tablename__ = "sanction_list_versions"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source: Mapped[str] = mapped_column(String(32))  # csl / ofac_sdn
+    sha256: Mapped[str] = mapped_column(String(64))
+    entry_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active / superseded / failed
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class SanctionEntry(Base):
+    __tablename__ = "sanction_entries"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sanction_list_versions.id", ondelete="CASCADE"), index=True)  # noqa: E501
+    source: Mapped[str] = mapped_column(String(32))
+    list_name: Mapped[str] = mapped_column(String(256))
+    external_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entity_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    name: Mapped[str] = mapped_column(Text)
+    names_normalized: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)  # 主名 + 别名（规范化）
+    countries: Mapped[list[str]] = mapped_column(ARRAY(String(2)), default=list)
+    addresses: Mapped[str | None] = mapped_column(Text, nullable=True)
+    programs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SanctionToken(Base):
+    """名称分词倒排索引（候选召回用）。"""
+    __tablename__ = "sanction_tokens"
+    __table_args__ = (Index("ix_sanction_tokens_entry", "entry_id"),)
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sanction_entries.id", ondelete="CASCADE"), primary_key=True)
+
+
+class ScreeningHit(TenantScoped, Base):
+    """疑似命中复核队列（SM-20）。"""
+    __tablename__ = "screening_hits"
+    subject_type: Mapped[str] = mapped_column(String(16))  # company / contact
+    subject_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    subject_name: Mapped[str] = mapped_column(String(256))
+    entry_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    entry_name: Mapped[str] = mapped_column(Text)
+    list_name: Mapped[str] = mapped_column(String(256))
+    source: Mapped[str] = mapped_column(String(32))
+    external_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    score: Mapped[float] = mapped_column(Float)
+    matched_name: Mapped[str] = mapped_column(Text)
+    list_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)  # pending / confirmed / false_positive
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)

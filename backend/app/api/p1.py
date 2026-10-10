@@ -382,6 +382,7 @@ class CompanyOut(ORM):
     won_amount_usd: float | None
     source: str
     contact_count: int
+    sanction_status: str = "unscreened"
     version: int
     created_at: datetime
     updated_at: datetime
@@ -540,6 +541,12 @@ class ContactOut(ORM):
     department: str | None
     email: str | None
     email_status: str
+    email_reason_codes: list[str] = []
+    email_verified_at: datetime | None = None
+    is_role_email: bool = False
+    subscriber_type: str = "unknown"
+    lawful_basis: str | None = None
+    sanction_status: str = "unscreened"
     email_confidence: float | None
     phone: str | None
     linkedin_url: str | None
@@ -735,7 +742,7 @@ def import_errors_csv(iid: uuid.UUID, cu: CurrentUser = Depends(require("import.
 @router.get("/data-providers", tags=["companies"])
 def data_providers(cu: CurrentUser = Depends(require("company.read"))):
     s = get_settings()
-    return {"active": s.contact_provider, "available": [
+    return {"active": get_provider().name, "available": [
         {"name": "mock", "configured": True},
         {"name": "apollo", "configured": bool(s.apollo_api_key)},
         {"name": "hunter", "configured": bool(s.hunter_api_key)},

@@ -1,10 +1,11 @@
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="TL_", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="TL_", extra="ignore", populate_by_name=True)
 
     env: str = "dev"
     database_url: str = "postgresql+psycopg://tl:tl@localhost:5432/tradeleads"
@@ -40,12 +41,34 @@ class Settings(BaseSettings):
     import_max_rows: int = 100_000
     import_max_bytes: int = 20 * 1024 * 1024
 
-    # 联系人数据源：mock | apollo | hunter | snov
-    contact_provider: str = "mock"
+    # 联系人数据源：auto（有 Hunter Key 用 hunter，否则 mock）| mock | apollo | hunter | snov
+    contact_provider: str = "auto"
     apollo_api_key: str = ""
-    hunter_api_key: str = ""
+    hunter_api_key: str = Field("", validation_alias=AliasChoices("TL_HUNTER_API_KEY", "HUNTER_API_KEY"))
+    hunter_base_url: str = "https://api.hunter.io/v2"
+    hunter_timeout_s: float = 25.0
+    hunter_max_retries: int = 3
     snov_client_id: str = ""
     snov_client_secret: str = ""
+
+    # 邮箱验证：auto（有 MillionVerifier Key 用它，否则有 Hunter Key 用 hunter，否则 mock）| mock | millionverifier | hunter
+    verifier_provider: str = "auto"
+    millionverifier_api_key: str = Field("", validation_alias=AliasChoices("TL_MILLIONVERIFIER_API_KEY", "MILLIONVERIFIER_API_KEY"))
+    millionverifier_base_url: str = "https://api.millionverifier.com/api/v3/"
+    verify_cache_hours: int = 24
+    verify_check_mx: bool = True
+    reverify_days: int = 7
+
+    # 退订链接
+    public_base_url: str = "http://localhost:8000"
+    unsubscribe_secret: str = ""  # 为空时使用 jwt_secret 派生
+
+    # 制裁名单
+    sanctions_csl_url: str = "https://data.trade.gov/downloadable_consolidated_screening_list/v1/consolidated.csv"
+    sanctions_ofac_sdn_url: str = "https://sanctionslistservice.ofac.treas.gov/api/publicationpreview/exports/sdn.csv"
+    sanctions_ofac_alt_url: str = "https://sanctionslistservice.ofac.treas.gov/api/publicationpreview/exports/alt.csv"
+    sanctions_threshold: float = 0.85
+    sanctions_stale_hours: int = 72
 
 
 @lru_cache

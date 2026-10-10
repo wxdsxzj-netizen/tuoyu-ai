@@ -90,3 +90,13 @@ CI 配置见 `.github/workflows/ci.yml`。
 | 联系人数据源 | 可插拔接口（Apollo / Hunter / Snov），当前只有 mock；配置真实数据源但无 Key 时返回 `DATA_PROVIDER_UNAVAILABLE`，不会回退到抓取 | `POST /companies/{id}:enrich-contacts` |
 
 角色权限：所有者 / 管理员可管理知识库与 ICP；业务员可查看知识库和 ICP，可新建公司 / 联系人、导入、调用数据源。
+
+## P2：联系人验证与合规（M05）
+
+- **Hunter.io 适配器**（`app/data/hunter.py`）：Domain Search / Email Finder / Email Verifier；`HUNTER_API_KEY` 环境变量；进程内限流（15/s·500/min，验证 10/s·300/min）；403 退避重试、429 额度用完、401 Key 无效、451 本人要求停止处理（不入库）。未配置 Key 时自动使用 mock。
+- **邮箱验证流水线**（`app/compliance/verify.py`）：语法 → 一次性邮箱 / 角色邮箱 → 平台退信库 → MX → 外部服务（MillionVerifier 默认 / Hunter / mock）；五类结果 + 原因码；24 小时复用不计费；服务不可用记为“未知”。
+- **抑制名单**：租户级（邮箱 / 域名 / 公司 / 号码，渠道范围）+ 平台级（90 天内 ≥2 租户投诉、收件人“退订所有发件人”），平台级不暴露来源租户；解除规则按 BR-5-09。
+- **退订**：`/u/{token}` HMAC 签名令牌（不含明文邮箱），支持 RFC 8058 一键退订（`List-Unsubscribe-Post`）与三种范围。
+- **制裁筛查**：每日下载 trade.gov CSL + OFAC SDN（含别名），倒排召回 + 双向词集合相似度，≥0.85 进入复核队列；名单 > 72 小时未更新标记过期。平台手动刷新：`POST /api/v1/platform/sanctions:refresh?sync=true`。
+- **地区规则**：GDPR / UK PECR / CAN-SPAM / CASL / PIPL / AU 默认规则（版本化，平台双人复核发布、可回滚）；LIA、同意记录、发件人身份与实体地址页脚。
+- **发送前闸门**：`GET /api/v1/contacts/{id}/compliance-check` 汇总以上全部，供后续序列 / 发信调用。

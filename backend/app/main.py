@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api.p1 import router as p1_router
+from app.api.p2 import public as p2_public
+from app.api.p2 import router as p2_router
 from app.api.platform import router as platform_router
 from app.api.routes import router
 from app.core.config import get_settings
@@ -47,4 +49,6 @@ def healthz():
 
 app.include_router(router)
 app.include_router(platform_router)
+app.include_router(p2_router)
+app.include_router(p2_public)
 app.include_router(p1_router)

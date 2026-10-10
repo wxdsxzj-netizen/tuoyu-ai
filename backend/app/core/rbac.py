@@ -19,11 +19,16 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "company.manage": ("新建/编辑公司与联系人", "Manage companies & contacts"),
     "contact.enrich": ("调用联系人数据源", "Enrich contacts"),
     "import.run": ("导入数据", "Import data"),
+    "contact.verify": ("验证联系人邮箱", "Verify contacts"),
+    "compliance.read": ("查看合规中心", "View compliance"),
+    "compliance.manage": ("管理合规设置/解除抑制/审核制裁命中", "Manage compliance"),
+    "suppression.add": ("添加抑制名单", "Add suppressions"),
 }
 
 SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {
     "owner": ("所有者", set(PERMISSIONS)),
     "admin": ("管理员", set(PERMISSIONS) - {"billing.manage"}),
     "sales": ("业务员", {"tenant.read", "user.read", "job.run", "job.read", "llm.use",
-                         "kb.read", "icp.read", "company.read", "company.manage", "contact.enrich", "import.run"}),
+                         "kb.read", "icp.read", "company.read", "company.manage", "contact.enrich", "import.run",
+                         "contact.verify", "compliance.read", "suppression.add"}),
 }

@@ -116,3 +116,71 @@ def import_task(import_job_id: str, tenant_id: str, actor_id: str | None = None)
             db.commit()
         finally:
             db.close()
+
+
+# ---------------- P2 作业 ----------------
+@celery_app.task(name="contacts.verify")
+def verify_contacts_task(job_id: str, tenant_id: str):
+    """批量邮箱验证（M5-01，异步，≤ 10 万条）。"""
+    from sqlalchemy import select
+
+    from app.compliance.verify import apply_to_contact, verify_email
+    from app.models import Contact
+
+    def fn(job, db):
+        ids = [uuid.UUID(x) for x in (job.params or {}).get("contact_ids", [])]
+        counts = {k: 0 for k in ("valid", "catch_all", "risky", "invalid", "unknown")}
+        counts.update(cached=0, skipped=0)
+        for i, cid in enumerate(ids):
+            c = db.scalar(select(Contact).where(Contact.id == cid, Contact.deleted_at.is_(None)))
+            if not c or not c.email:
+                counts["skipped"] += 1
+                continue
+            r = verify_email(db, c.email, force=bool((job.params or {}).get("force")))
+            apply_to_contact(c, r)
+            counts[r.status] += 1
+            counts["cached"] += r.cached
+            if i % 20 == 0:
+                job.progress = int(i * 95 / max(len(ids), 1))
+                db.commit()
+        write_audit(db, tenant_id=job.tenant_id, action="contact.verify", actor_type="system", object_type="job",
+                    object_id=job.id, after=counts)
+        return counts
+    _run(job_id, tenant_id, fn)
+
+
+@celery_app.task(name="sanctions.rescreen")
+def rescreen_task(job_id: str, tenant_id: str):
+    from app.compliance.sanctions import rescreen_tenant
+
+    def fn(job, db):
+        return rescreen_tenant(db)
+    _run(job_id, tenant_id, fn)
+
+
+@celery_app.task(name="sanctions.refresh")
+def refresh_sanctions_task():
+    """每日：下载 CSL + OFAC SDN 名单，然后对全部租户增量复筛（BR-5-12）。"""
+    from sqlalchemy import select
+
+    from app.compliance.sanctions import refresh_lists, rescreen_tenant
+    from app.core.db import bypass_tenant
+    from app.models import Tenant
+    db = SessionLocal()
+    try:
+        result = refresh_lists(db)
+        if any(v.get("status") == "updated" for v in result.values()):
+            with bypass_tenant():
+                tids = db.scalars(select(Tenant.id)).all()
+            for tid in tids:
+                with tenant_context(tid):
+                    tdb = SessionLocal()
+                    try:
+                        c = rescreen_tenant(tdb)
+                        write_audit(tdb, tenant_id=tid, action="sanctions.rescreen", actor_type="system", after=c)
+                        tdb.commit()
+                    finally:
+                        tdb.close()
+        return result
+    finally:
+        db.close()

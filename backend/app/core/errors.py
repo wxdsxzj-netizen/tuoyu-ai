@@ -42,6 +42,18 @@ ERROR_CODES: dict[str, tuple[int, str, str, bool]] = {
     "COMMON_URL_FORMAT": (400, "格式不正确", "Invalid URL", False),
     "COMMON_AMOUNT": (400, "取值无效", "Invalid amount", False),
     "COMMON_DATETIME": (400, "取值无效", "Invalid date", False),
+    "DATA_PROVIDER_AUTH_FAILED": (503, "数据源 API Key 无效，请检查配置", "Data provider auth failed", False),
+    "DATA_PROVIDER_RATE_LIMITED": (503, "数据源请求过于频繁，请稍后重试", "Data provider rate limited", True),
+    "DATA_PROVIDER_QUOTA_EXCEEDED": (402, "数据源额度已用完，请充值或升级套餐", "Data provider credits exhausted", False),
+    "DATA_PROVIDER_BAD_REQUEST": (400, "数据源拒绝了请求参数", "Data provider rejected the request", False),
+    "COMPLIANCE_CONSENT_REQUIRED": (403, "该收件人需要同意依据", "Consent basis required", False),
+    "COMPLIANCE_LIA_MISSING": (403, "缺少欧盟 / 英国合法利益评估记录", "Legitimate interest assessment missing", False),
+    "COMPLIANCE_REGION_DENY": (403, "该地区规则不允许此类触达（附原因码）", "Region rule denies outreach", False),
+    "COMPLIANCE_REVIEWER_CONFLICT": (409, "复核人不能是提交人本人", "Reviewer must differ from submitter", False),
+    "COMPLIANCE_SANCTION_LIST_STALE": (200, "制裁名单超过 72 小时未更新，需要人工确认", "Sanctions list stale", False),
+    "COMPLIANCE_SUPPRESSED": (403, "收件人在抑制名单中（附来源与渠道）", "Recipient is suppressed", False),
+    "COMPLIANCE_SUPPRESSION_LOCKED": (403, "此来源的抑制不能解除", "This suppression cannot be revoked", False),
+    "COMPLIANCE_UNSUBSCRIBE_INVALID": (400, "退订链接无效或已损坏", "Invalid unsubscribe link", False),
     "LLM_UNAVAILABLE": (503, "AI 服务暂不可用", "AI service unavailable", True),
 }
 

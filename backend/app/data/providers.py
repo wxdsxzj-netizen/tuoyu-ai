@@ -92,8 +92,15 @@ def build_provider(name: str, s: Settings) -> ContactDataProvider:
         return MockContactProvider()
     if name == "apollo":
         return _UnconfiguredProvider("apollo", bool(s.apollo_api_key))
+    if name == "auto":
+        name = "hunter" if s.hunter_api_key else "mock"
+        if name == "mock":
+            return MockContactProvider()
     if name == "hunter":
-        return _UnconfiguredProvider("hunter", bool(s.hunter_api_key))
+        if not s.hunter_api_key:
+            return _UnconfiguredProvider("hunter", False)
+        from app.data.hunter import HunterClient, HunterContactProvider
+        return HunterContactProvider(HunterClient(s.hunter_api_key, s.hunter_base_url, s.hunter_timeout_s, s.hunter_max_retries))
     if name == "snov":
         return _UnconfiguredProvider("snov", bool(s.snov_client_id and s.snov_client_secret))
     raise ValueError(f"未知数据源: {name}")
