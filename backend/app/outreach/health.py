@@ -117,6 +117,11 @@ def trip(db: Session, mb: Mailbox, metric: str, value: float):
     db.add(BreakerEvent(scope="mailbox", scope_id=mb.id, level="paused", trigger_metric=metric, trigger_value=float(value),
                         cooldown_hours=hours))
     db.flush()
+    from app.crm.notify import managers, notify  # N-05 熔断触发：负责人 + 管理员，不可关闭
+    shown = f"{value * 100:.2f}%" if metric.endswith("rate") else str(value)
+    notify(db, "N-05", [mb.owner_id, *managers(db)], f"发件箱 {mb.address} 已暂停冷信",
+           f"触发指标：{metric} = {shown}；冷却 {hours} 小时。请处理原因后在“发件箱与域名”中标记已处理，冷却期满由管理员确认恢复。",
+           object_type="mailbox", object_id=mb.id, action_url="/mailboxes", level="urgent")
     if mb.domain_id:
         n = db.scalar(select(func.count()).select_from(Mailbox).where(Mailbox.domain_id == mb.domain_id, Mailbox.status == "paused"))
         if n >= 2:
@@ -129,6 +134,10 @@ def pause_domain(db: Session, domain_id, metric, value):
         d.paused = True
         db.add(BreakerEvent(scope="domain", scope_id=d.id, level="domain_paused", trigger_metric=metric, trigger_value=float(value),
                             cooldown_hours=48))
+        from app.crm.notify import notify, users_with
+        notify(db, "N-05", users_with(db, "billing.manage") or users_with(db, "mailbox.manage"), f"发信域名 {d.domain} 已暂停全部发送",
+               f"触发：{metric} = {value}；需平台投递团队复核后恢复。", object_type="domain", object_id=d.id,
+               action_url="/mailboxes", level="urgent")
 
 
 def mark_resolved(db: Session, mb: Mailbox, resolution: str, actor):
@@ -154,7 +163,10 @@ def confirm_recovery(db: Session, mb: Mailbox, actor) -> bool:
 
 def tick_lifecycle(db: Session, mb: Mailbox):
     """预热满 21 天 → 正常；恢复期满 → 正常。"""
+    from app.crm.notify import notify
     if mb.status == "warming" and warmup_day(mb) > 21:
         mb.status = "active"
+        notify(db, "N-20", [mb.owner_id], f"发件箱 {mb.address} 预热完成", object_type="mailbox", object_id=mb.id, action_url="/mailboxes")
     if mb.status == "recovering" and mb.recovery_until and mb.recovery_until <= utcnow():
         mb.status, mb.recovery_until = "active", None
+        notify(db, "N-20", [mb.owner_id], f"发件箱 {mb.address} 已恢复正常", object_type="mailbox", object_id=mb.id, action_url="/mailboxes")  # noqa: E501

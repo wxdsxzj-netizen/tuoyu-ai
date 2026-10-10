@@ -555,10 +555,17 @@ def _check_mailboxes(db, ids):
         _get(db, Mailbox, i)
 
 
+
+def _check_autonomy(db, autonomy):
+    from app.outreach.engine import l2_enabled
+    if autonomy == "L2" and not l2_enabled(db):
+        raise AppError("SEQ_AUTONOMY_NOT_ALLOWED")
+
 @router.post("/sequences", status_code=201, tags=["sequences"])
 def create_sequence(body: SequenceIn, request: Request, cu: CurrentUser = Depends(require("sequence.manage")),
                     db: Session = Depends(get_db)):
     _check_mailboxes(db, body.mailbox_ids)
+    _check_autonomy(db, body.autonomy)
     data = body.model_dump(exclude={"steps"})
     s = Sequence(**data, owner_id=cu.id, created_by=cu.id)
     db.add(s)
@@ -585,6 +592,7 @@ def patch_sequence(sid: uuid.UUID, body: SequencePatch, request: Request, cu: Cu
     if s.status == "archived":
         raise AppError("COMMON_INVALID_STATE")
     data = body.model_dump(exclude_unset=True)
+    _check_autonomy(db, data.get("autonomy"))
     if "mailbox_ids" in data:
         _check_mailboxes(db, data["mailbox_ids"])
     for k, v in data.items():

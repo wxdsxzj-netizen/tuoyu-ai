@@ -18,7 +18,7 @@ api.interceptors.response.use(
     const e = err.response?.data?.error
     if (err.response?.status === 401 && !err.config?.url?.includes('/auth/login')) {
       localStorage.removeItem(TOKEN_KEY)
-      if (location.pathname !== '/login') location.href = '/login'
+      if (location.pathname !== '/login' && !location.pathname.startsWith('/confirm/')) location.href = '/login'
     }
     message.error(e ? `${e.message}（${e.code} · ${e.trace_id.slice(0, 8)}）` : '网络错误')
     return Promise.reject(err)

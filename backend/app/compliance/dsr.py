@@ -19,6 +19,7 @@ from app.models import ConsentRecord, Contact, DsrRequest, Enrollment, InboundMe
 
 TYPES = ("access", "delete", "rectify", "object")
 TERMINAL = ("completed", "rejected")
+_TYPE_ZH = {"access": "访问", "delete": "删除", "rectify": "更正", "object": "反对营销"}
 RECTIFIABLE = {"full_name", "title", "department", "phone", "linkedin_url", "country"}
 STOP_INTENT = ("stop contacting", "do not contact", "don't contact", "stop emailing", "remove me", "停止联系", "不要再联系", "别再联系")
 
@@ -42,6 +43,9 @@ def create_request(db: Session, *, type: str, subject_email: str, channel="manua
     db.add(r)
     db.flush()
     _event(r, "received", actor, channel=channel)
+    from app.crm.notify import notify, users_with
+    notify(db, "N-23", users_with(db, "dsr.manage"), f"收到数据主体请求（{_TYPE_ZH[type]}）",
+           f"法定时限 30 天，截止 {r.due_at:%Y-%m-%d}", object_type="dsr", object_id=r.id, action_url="/dsr", level="warn")
     # BR-5-32：反对营销 / 含“停止联系”意图 → 立即全平台冷邮件抑制，不等待处理
     if type == "object" or any(k in (details or "").lower() for k in STOP_INTENT):
         add_global(db, key_type="email", value=email, reason="object")
@@ -229,10 +233,18 @@ def daily_check(db: Session) -> dict:
                 r.alerts_sent = [*(r.alerts_sent or []), key]
                 _event(r, key, None)
                 out[key].append(str(r.id))
+                from app.crm.notify import notify, users_with
+                to = users_with(db, "dsr.manage") if key == "remind20" else users_with(db, "billing.manage")  # 25 天升级所有者
+                notify(db, "N-23", to, f"数据主体请求{'即将超期' if key == 'remind20' else '已升级：剩余不足 5 天'}",
+                       f"{_TYPE_ZH[r.type]}请求，截止 {r.due_at:%Y-%m-%d}，剩余 {days_left(r)} 天", object_type="dsr", object_id=r.id,
+                       action_url="/dsr", level="warn" if key == "remind20" else "urgent")
         if elapsed >= 28 and r.type in ("delete", "object") and "restricted28" not in (r.alerts_sent or []):
             n = restrict_contacts(db, r)
             r.alerts_sent = [*(r.alerts_sent or []), "restricted28"]
             _event(r, "restricted", None, contacts=n)
+            from app.crm.notify import notify, users_with
+            notify(db, "N-23", users_with(db, "dsr.manage"), "数据主体请求第 28 天：相关记录已限制处理",
+                   f"涉及 {n} 个联系人；请尽快完成处理", object_type="dsr", object_id=r.id, action_url="/dsr", level="urgent")
             out["restricted28"].append(str(r.id))
     return out
 

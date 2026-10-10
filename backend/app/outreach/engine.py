@@ -73,6 +73,11 @@ def enroll(db: Session, seq: Sequence, contact: Contact, actor=None, now: dateti
 
 
 # ---------------- 草稿 ----------------
+def l2_enabled(db) -> bool:
+    from app.models import TenantCompliance
+    tc = db.scalar(select(TenantCompliance).limit(1))
+    return bool(tc and tc.l2_auto_approve)
+
 def sender_name(db, seq: Sequence, mb: Mailbox | None) -> str:
     if mb and mb.display_name:
         return mb.display_name
@@ -91,8 +96,8 @@ def ensure_draft(db: Session, e: Enrollment, seq: Sequence, step: SequenceStep) 
     res = writer.write(db, seq=seq, step=step, contact=contact, sender=sender_name(db, seq, mb),
                        gdpr=(country_of(contact) or "") in LIA_COUNTRIES)
     status = res["status"]
-    if status == "pending_approval" and seq.autonomy == "L2" and res["qa"]["raw_score"] >= 85:
-        status = "approved"  # L2：质检 ≥ 85 自动通过
+    if status == "pending_approval" and seq.autonomy == "L2" and res["qa"]["raw_score"] >= 85 and l2_enabled(db):
+        status = "approved"  # L2：质检 ≥ 85 自动通过（需租户开启，试点默认关闭）
     vals = dict(subject=res["subject"], body=res["body"], facts_used=res["facts_used"], personalization=res["personalization"],
                 qa_score=res["qa"]["score"], qa_detail=res["qa"], rewrite_count=res["rewrite_count"], model=res["model"],
                 status=status, step_version=step.version, reviewed_by=None)
@@ -243,6 +248,8 @@ def _send(db, e, seq, step, draft, contact, mb, now, rng, steps) -> str:
                                        "step_version": draft.step_version, "gate": e.last_gate})
         db.add(om)
         db.flush()
+        from app.inbox.service import record_outbound
+        record_outbound(db, om=om, owner_id=seq.owner_id, sent_by="sequence")
         event(db, e, "sent", None, message_id=om.id, mailbox=mb.address)
         m.sent_cold += 1
         mb.last_sent_at = now

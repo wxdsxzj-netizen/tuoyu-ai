@@ -1,9 +1,10 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, String, Table, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Column, Date, DateTime, ForeignKey, String, Table, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql.expression import false as sa_false
 
 from app.core.db import Base, TenantOwned, TenantScoped, TimestampMixin, utcnow
 
@@ -208,6 +209,7 @@ class Contact(TenantScoped, Base):
     restricted_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     lead_status: Mapped[str] = mapped_column(String(16), default="new")  # SM-02 简化：new / contacting / replied / not_interested / suppressed / no_response  # noqa: E501
     do_not_contact_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    account_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     company: Mapped[Company | None] = relationship(lazy="joined")
 
 
@@ -322,6 +324,8 @@ class TenantCompliance(TenantScoped, Base):
     postal_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     privacy_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
     footer_language: Mapped[str] = mapped_column(String(8), default="en")
+    l2_auto_approve: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_false())  # 试点默认关闭
+    bank_info: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 收款银行（PI 用）
 
 
 class RegionRule(Base):
@@ -629,3 +633,182 @@ class InboundMessage(TenantOwned, Base):
     classified_by: Mapped[str | None] = mapped_column(String(8), nullable=True)
     needs_human: Mapped[bool] = mapped_column(Boolean, default=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ======================= P4：通知 / 收件箱 / 交付包 / CRM =======================
+class Notification(TenantScoped, Base):
+    __tablename__ = "notifications"
+    __table_args__ = (Index("ix_notif_recipient", "recipient_id", "read_at"),)
+    recipient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    code: Mapped[str] = mapped_column(String(8))  # N-xx
+    title: Mapped[str] = mapped_column(String(256))
+    body: Mapped[str] = mapped_column(Text, default="")
+    object_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    object_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    level: Mapped[str] = mapped_column(String(8), default="info")  # info / warn / urgent
+    merged_count: Mapped[int] = mapped_column(Integer, default=1)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Account(TenantScoped, Base):
+    """CRM 客户（公司级）。"""
+    __tablename__ = "accounts"
+    name: Mapped[str] = mapped_column(String(256))
+    domain: Mapped[str | None] = mapped_column(String(253), nullable=True, index=True)
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=True, index=True)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    pool_status: Mapped[str] = mapped_column(String(8), default="private")  # private / public
+    grade: Mapped[str] = mapped_column(String(1), default="C")
+    stage: Mapped[str] = mapped_column(String(12), default="lead")  # lead / prospect / customer / dormant
+    source: Mapped[str] = mapped_column(String(16), default="inquiry")
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String(64)), default=list)
+    protected_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_valid_followup_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    released_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Conversation(TenantScoped, Base):
+    __tablename__ = "conversations"
+    account_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    mailbox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    channel: Mapped[str] = mapped_column(String(12), default="email")
+    peer_email: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
+    subject: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    subject_norm: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(10), default="unread")  # unread / pending / replied / closed / spam
+    mode: Mapped[str] = mapped_column(String(10), default="human")
+    assignee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    last_category: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    needs_human: Mapped[bool] = mapped_column(Boolean, default=False)
+    language: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class Message(TenantOwned, Base):
+    __tablename__ = "messages"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
+    direction: Mapped[str] = mapped_column(String(4))  # in / out / note
+    from_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    to_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    body: Mapped[str] = mapped_column(Text, default="")
+    body_translated: Mapped[str | None] = mapped_column(Text, nullable=True)
+    language: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    header_message_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    in_reply_to: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    sent_by: Mapped[str] = mapped_column(String(10), default="customer")  # customer / user / sequence / ai
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(10), default="received")  # received / sent / blocked / failed
+    detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class Handoff(TenantScoped, Base):
+    """交付包（SM-12）。领取用唯一约束 + 行锁防重复。"""
+    __tablename__ = "handoffs"
+    conversation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    account_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    assignee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(12), default="pending", index=True)  # pending / accepted / rejected / expired
+    category: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    needs: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    research: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    suggested_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reject_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reject_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reassign_count: Mapped[int] = mapped_column(Integer, default=0)
+    sla_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class Opportunity(TenantScoped, Base):
+    __tablename__ = "opportunities"
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("accounts.id"), index=True)
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(256))
+    stage: Mapped[str] = mapped_column(String(16), default="new_inquiry")
+    prev_stage: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    stage_entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    amount_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    products: Mapped[list | None] = mapped_column(JSONB, default=list)
+    expected_close_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    lost_reason: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_qualified: Mapped[bool] = mapped_column(Boolean, default=False)
+    qualified_by: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    handoff_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+
+
+class Quote(TenantScoped, Base):
+    __tablename__ = "quotes"
+    __table_args__ = (UniqueConstraint("tenant_id", "quote_no", "doc_version"),)
+    quote_no: Mapped[str] = mapped_column(String(32))
+    doc_version: Mapped[int] = mapped_column(Integer, default=1)
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("accounts.id"), index=True)
+    incoterm: Mapped[str] = mapped_column(String(4), default="FOB")
+    port: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    fx_rate: Mapped[float | None] = mapped_column(Float, nullable=True)  # 1 外币 = x CNY
+    fx_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    items: Mapped[list] = mapped_column(JSONB, default=list)  # [{name, sku, qty, unit, unit_price, unit_cost}]
+    freight_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    insurance_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    commission_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    discount_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    subtotal_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    total_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    cost_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    gross_margin_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    valid_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    payment_terms: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    delivery_terms: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    language: Mapped[str] = mapped_column(String(5), default="en")
+    status: Mapped[str] = mapped_column(String(16), default="draft")
+    # draft / pending_approval / rejected / approved / sent / confirmed / locked / superseded / void / converted
+    approval_level: Mapped[str | None] = mapped_column(String(8), nullable=True)  # manager / owner
+    approval_reasons: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    submitted_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confirm_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    confirmed_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    confirmed_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    confirmed_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    customer_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    void_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class ProformaInvoice(TenantScoped, Base):
+    __tablename__ = "proforma_invoices"
+    pi_no: Mapped[str] = mapped_column(String(32))
+    quote_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("quotes.id"), index=True)
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    bank_info: Mapped[dict] = mapped_column(JSONB)
+    payment_terms: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    delivery_terms: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    total_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    status: Mapped[str] = mapped_column(String(10), default="issued")  # issued / void

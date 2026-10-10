@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { Layout, Menu, Dropdown, Spin, Space, Select, Typography } from 'antd'
-import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined, BookOutlined, AimOutlined, BankOutlined, ContactsOutlined, ImportOutlined, SafetyCertificateOutlined, MailOutlined, SendOutlined, CheckSquareOutlined, FileProtectOutlined, InboxOutlined } from '@ant-design/icons'
+import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined, BookOutlined, AimOutlined, BankOutlined, ContactsOutlined, ImportOutlined, SafetyCertificateOutlined, MailOutlined, SendOutlined, CheckSquareOutlined, FileProtectOutlined, InboxOutlined, MessageOutlined, GiftOutlined, ShopOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from './auth'
 import i18n, { LOCALE_KEY } from './i18n'
@@ -21,6 +21,11 @@ import MailboxesPage from './pages/Mailboxes'
 import SequencesPage from './pages/Sequences'
 import ApprovalsPage from './pages/Approvals'
 import DeliveryPage from './pages/Delivery'
+import InboxPage from './pages/Inbox'
+import HandoffsPage from './pages/Handoffs'
+import CrmPage from './pages/Crm'
+import ConfirmPage from './pages/Confirm'
+import NotificationBell from './pages/Notifications'
 
 function Shell() {
   const { me, can, logout } = useAuth()
@@ -29,6 +34,9 @@ function Shell() {
   const loc = useLocation()
   const items = [
     { key: '/', icon: <DashboardOutlined />, label: t('menu.dashboard') },
+    can('inbox.read') && { key: '/inbox', icon: <MessageOutlined />, label: t('menu.inbox') },
+    can('handoff.accept') && { key: '/handoffs', icon: <GiftOutlined />, label: t('menu.handoffs') },
+    can('crm.read') && { key: '/crm', icon: <ShopOutlined />, label: t('menu.crm') },
     can('kb.read') && { key: '/kb', icon: <BookOutlined />, label: t('menu.kb') },
     can('icp.read') && { key: '/icp', icon: <AimOutlined />, label: t('menu.icp') },
     can('company.read') && { key: '/companies', icon: <BankOutlined />, label: t('menu.companies') },
@@ -56,6 +64,7 @@ function Shell() {
           <Select size="small" value={i18n.language} style={{ width: 110 }}
             options={[{ value: 'zh-CN', label: '简体中文' }, { value: 'en-US', label: 'English' }]}
             onChange={(v) => { localStorage.setItem(LOCALE_KEY, v); i18n.changeLanguage(v) }} />
+          <NotificationBell />
           <Typography.Text type="secondary">{me?.tenant.name}</Typography.Text>
           <Dropdown menu={{ items: [{ key: 'logout', label: t('app.logout'), onClick: () => { logout(); nav('/login') } }] }}>
             <Space style={{ cursor: 'pointer' }}><UserOutlined />{me?.user.name}</Space>
@@ -64,6 +73,9 @@ function Shell() {
         <Layout.Content style={{ margin: 24 }}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/inbox" element={<InboxPage />} />
+            <Route path="/handoffs" element={<HandoffsPage />} />
+            <Route path="/crm" element={<CrmPage />} />
             <Route path="/kb" element={<KbPage />} />
             <Route path="/icp" element={<IcpPage />} />
             <Route path="/companies" element={<CompaniesPage />} />
@@ -92,6 +104,7 @@ export default function App() {
   if (loading) return <Spin fullscreen />
   return (
     <Routes>
+      <Route path="/confirm/:token" element={<ConfirmPage />} />
       <Route path="/login" element={me ? <Navigate to="/" /> : <LoginPage />} />
       <Route path="/*" element={me ? <Shell /> : <Navigate to="/login" />} />
     </Routes>

@@ -434,6 +434,8 @@ def test_reply_categories_ooo_unsub_and_imap(client):
     h = register(client, "o@a.com")
     with Sink() as sink:
         mb = setup_outreach(client, sink, h)
+        assert client.post(f"{P}/sequences", headers=h, json={"name": "S", "mailbox_ids": [mb["id"]], "autonomy": "L2"}).status_code == 403
+        assert client.put(f"{P}/outreach/settings", headers=h, json={"l2_auto_approve": True}).status_code == 200
         seq = client.post(f"{P}/sequences", headers=h, json={"name": "S", "mailbox_ids": [mb["id"]], "autonomy": "L2"}).json()
         _, ah = add_user(client, h, "admin@a.com", "admin")
         client.post(f"{P}/sequences/{seq['id']}:submit", headers=h)

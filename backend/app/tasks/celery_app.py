@@ -15,5 +15,7 @@ celery_app.conf.update(
         "mailbox-poll": {"task": "mailbox.poll", "schedule": 120.0},
         "dns-daily": {"task": "dns.daily", "schedule": crontab(hour=9, minute=0)},
         "dsr-daily": {"task": "dsr.daily", "schedule": crontab(hour=1, minute=0)},
+        "handoff-sla": {"task": "handoff.sla", "schedule": 300.0},
+        "crm-daily": {"task": "crm.daily", "schedule": crontab(hour=23, minute=0)},
     }, task_default_retry_delay=10, timezone="UTC", task_serializer="json",  # noqa: E501
 )

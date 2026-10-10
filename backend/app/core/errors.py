@@ -72,6 +72,18 @@ ERROR_CODES: dict[str, tuple[int, str, str, bool]] = {
     "SEQ_TEMPLATE_NOT_APPROVED": (409, "模板尚未审批通过", "Template not approved", False),
     "SEQ_VALIDATION_FAILED": (422, "序列未通过启动检查（列出问题）", "Sequence validation failed", False),
     "SEQ_REVIEWER_CONFLICT": (409, "审批人不能是提交人本人", "Approver must differ from submitter", False),
+    "HANDOFF_REJECT_REASON_REQUIRED": (400, "请选择拒绝原因", "Reject reason required", False),
+    "COMMON_ALREADY_TAKEN": (409, "已被他人领取", "Already taken by someone else", False),
+    "INBOX_SEND_BLOCKED": (409, "发送前检查未通过，未发送", "Pre-send check failed; not sent", False),
+    "SEQ_AUTONOMY_NOT_ALLOWED": (403, "本企业未开启 L2 自动通过", "L2 auto-approve is disabled for this tenant", False),
+    "CRM_BANK_INFO_MISSING": (422, "尚未设置收款银行信息", "Bank info missing", False),
+    "CRM_CLAIM_COOLDOWN": (409, "该客户被释放后处于领取冷却期", "Claim cooldown", False),
+    "CRM_CONFIRM_LINK_EXPIRED": (410, "确认链接已过期，请联系业务员", "Confirmation link expired", False),
+    "CRM_DAILY_CLAIM_LIMIT": (429, "今日领取次数已用完", "Daily claim limit reached", False),
+    "CRM_DOC_LOCKED": (409, "单据已锁定，请申请解锁", "Document locked", False),
+    "CRM_LOST_REASON_REQUIRED": (400, "请选择输单原因", "Lost reason required", False),
+    "CRM_PRIVATE_POOL_FULL": (409, "私海客户已达上限", "Private pool full", False),
+    "CRM_SANCTION_BLOCKED": (409, "交易方筛查疑似命中，已阻止", "Blocked by sanctions screening", False),
     "LLM_UNAVAILABLE": (503, "AI 服务暂不可用", "AI service unavailable", True),
 }
 

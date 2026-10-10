@@ -286,3 +286,23 @@ def dsr_daily_task():
             write_audit(db, tenant_id=tid, action="dsr.daily_check", actor_type="system", after=r)
         return r
     return _each_tenant(fn, "dsr")
+
+
+@celery_app.task(name="handoff.sla")
+def handoff_sla_task():
+    """每 5 分钟：交付包 2 小时未领取改派 / 进共享池；7 天未处理失效。"""
+    from app.crm.handoff import sla_tick
+
+    def fn(db, tid):
+        r = sla_tick(db)
+        if any(r.values()):
+            write_audit(db, tenant_id=tid, action="handoff.sla_tick", actor_type="system", after=r)
+        return r
+    return _each_tenant(fn, "handoff")
+
+
+@celery_app.task(name="crm.daily")
+def crm_daily_task():
+    """每日：商机卡点预警（N-10）。"""
+    from app.crm.service import stuck_tick
+    return _each_tenant(lambda db, tid: {"stuck_notified": stuck_tick(db)}, "crm")

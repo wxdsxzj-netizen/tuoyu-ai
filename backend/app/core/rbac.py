@@ -29,6 +29,13 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "sequence.read": ("查看序列", "View sequences"),
     "sequence.manage": ("创建/编辑序列、加入联系人", "Manage sequences"),
     "sequence.approve": ("审批序列与邮件内容", "Approve sequences and content"),
+    "inbox.read": ("查看收件箱", "View inbox"),
+    "inbox.reply": ("回复客户", "Reply to customers"),
+    "handoff.accept": ("领取/处理交付包", "Accept/reject handoffs"),
+    "crm.read": ("查看客户与商机", "View CRM"),
+    "crm.manage": ("编辑客户、商机、报价", "Manage CRM"),
+    "crm.all": ("查看全部成员的客户与会话", "See all members' records"),
+    "quote.approve": ("审批报价（毛利/折扣）", "Approve quotes"),
 }
 
 SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {
@@ -37,5 +44,6 @@ SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {
     "sales": ("业务员", {"tenant.read", "user.read", "job.run", "job.read", "llm.use",
                          "kb.read", "icp.read", "company.read", "company.manage", "contact.enrich", "import.run",
                          "contact.verify", "compliance.read", "suppression.add",
-                         "mailbox.read", "sequence.read", "sequence.manage"}),
+                         "mailbox.read", "sequence.read", "sequence.manage",
+                         "inbox.read", "inbox.reply", "handoff.accept", "crm.read", "crm.manage"}),
 }

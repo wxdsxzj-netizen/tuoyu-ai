@@ -98,7 +98,8 @@ def _same_company(db, e: Enrollment, action: str, reason: str):
 
 
 def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_reply_to: str | None = None,
-                   references: str | None = None, mailbox: Mailbox | None = None, now: datetime | None = None) -> dict:
+                   references: str | None = None, mailbox: Mailbox | None = None, now: datetime | None = None,
+                   header_message_id: str | None = None) -> dict:
     now = now or utcnow()
     sender = normalize_email(parseaddr(from_addr)[1] or from_addr) or from_addr.lower()
     cat, conf, by = classify(subject, body, sender)
@@ -173,7 +174,22 @@ def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_r
             action = f"stopped (同公司{'移除' if handoff_like else '暂停'} {n})"
         event(db, e, "reply", cat.upper(), confidence=conf)
     db.flush()
-    return {"category": cat, "confidence": conf, "needs_human": conf < 0.8, "action": action, "enrollment_id": str(e.id) if e else None}
+    # P4：进入统一收件箱（会话归并 + 翻译），积极类回复（含非序列来信询盘）生成交付包
+    from app.crm import handoff as handoff_mod
+    from app.inbox.service import ingest_inbound
+    from app.models import Sequence
+    seq = db.get(Sequence, e.sequence_id) if e else None
+    if not contact:
+        contact = db.scalar(select(Contact).where(Contact.email_normalized == sender, Contact.deleted_at.is_(None)))
+    conv, msg = ingest_inbound(db, peer=sender, subject=subject, body=body or "", header_message_id=header_message_id, refs=ids,
+                               category=cat, confidence=conf, contact=contact, mailbox_id=mb.id if mb else None,
+                               enrollment_id=e.id if e else None, owner_id=seq.owner_id if seq else None)
+    hid = None
+    if cat in handoff_mod.HANDOFF_CATEGORIES:
+        h = handoff_mod.create(db, conv, e, contact, cat, now=now)
+        hid = str(h.id) if h else None
+    return {"category": cat, "confidence": conf, "needs_human": conf < 0.8, "action": action, "enrollment_id": str(e.id) if e else None,
+            "conversation_id": str(conv.id), "message_id": str(msg.id), "handoff_id": hid}
 
 
 def _text_of(msg) -> str:
@@ -206,6 +222,7 @@ def poll_mailbox(db: Session, mb: Mailbox, conn=None) -> int:
             if raw:
                 msg = email.message_from_bytes(raw)
                 handle_inbound(db, from_addr=msg.get("From", ""), subject=str(msg.get("Subject", "")), body=_text_of(msg),
+                               header_message_id=msg.get("Message-ID"),
                                in_reply_to=msg.get("In-Reply-To"), references=msg.get("References"), mailbox=mb)
                 n += 1
             mb.imap_last_uid = uid
