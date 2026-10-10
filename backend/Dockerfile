@@ -1,7 +1,7 @@
 # 生产镜像（开发也可用）：非 root、只含运行时依赖、自带健康检查
 FROM python:3.12-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
-RUN apt-get update && apt-get install -y --no-install-recommends libpq5 curl tini postgresql-client \
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5 curl tini postgresql-client poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 app
 WORKDIR /app

@@ -161,7 +161,7 @@ def extract_text(name: str, data: bytes) -> tuple[str, str]:
     if ext not in KINDS:
         raise AppError("KB_DOC_UNSUPPORTED", details={"file": name})
     if ext in ("png", "jpg", "jpeg"):
-        return ext, ""  # OCR 引擎未部署：标记 unsupported
+        return ext, ocr_image(data)
     if ext in ("txt", "md", "csv"):
         return ext, data.decode("utf-8", "ignore")
     if ext == "pdf":
@@ -199,7 +199,7 @@ def import_doc(db: Session, name: str, data: bytes, actor) -> DocImport:
     db.add(rec)
     db.flush()
     if not text.strip():
-        rec.status, rec.error = "unsupported", "图片 OCR 未启用（需部署 OCR 引擎）" if ext in ("png", "jpg", "jpeg") else "未识别到文字"
+        rec.status, rec.error = "unsupported", "图片未识别到文字（或 OCR 引擎未安装）" if ext in ("png", "jpg", "jpeg") else "未识别到文字"
         return rec
     paras = [p.strip() for p in re.split(r"\n\s*\n|\n(?=[A-Z一-龥].{0,40}[:：])", text) if len(p.strip()) >= 15][:200]
     n = 0
@@ -211,6 +211,21 @@ def import_doc(db: Session, name: str, data: bytes, actor) -> DocImport:
     rec.items_created = n
     db.flush()
     return rec
+
+
+def ocr_image(data: bytes) -> str:
+    """开源 Tesseract OCR（中文简体 + 英文）。引擎未安装时返回空串（标记 unsupported）。"""
+    import shutil
+    if not shutil.which("tesseract"):
+        return ""
+    with tempfile.NamedTemporaryFile(suffix=".img") as f:
+        f.write(data)
+        f.flush()
+        try:
+            r = subprocess.run(["tesseract", f.name, "-", "-l", "chi_sim+eng", "--psm", "3"], capture_output=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return r.stdout.decode("utf-8", "ignore") if r.returncode == 0 else ""
 
 
 # ---------------- 成交客户导入（M1-09 / M1-15）：同时建公司（成交标记）、CRM 客户（customer）、成交记录 ----------------

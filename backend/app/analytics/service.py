@@ -54,7 +54,10 @@ def acquisition_funnel(db: Session, since: datetime, until: datetime, owner_id=N
     ha = select(func.count()).select_from(Handoff).where(seq_ho, Handoff.status == "accepted", Handoff.decided_at.between(since, until))
     qt = select(func.count()).select_from(Quote).where(Quote.created_at.between(since, until), Quote.deleted_at.is_(None))
     won = select(func.count()).select_from(Opportunity).where(Opportunity.stage == "won", Opportunity.closed_at.between(since, until))
+    from app.models import Sample
+    sm = select(func.count()).select_from(Sample).where(Sample.created_at.between(since, until), Sample.deleted_at.is_(None))
     if owner_id:
+        sm = sm.where(Sample.created_by == owner_id)
         c = c.where(Company.owner_id == owner_id)
         ct = ct.where(Contact.created_by == owner_id)
         cv = cv.where(Contact.created_by == owner_id)
@@ -65,7 +68,7 @@ def acquisition_funnel(db: Session, since: datetime, until: datetime, owner_id=N
     return _steps([("candidates", "候选公司", _n(db, c)), ("enriched", "补全", _n(db, ct)), ("verified", "验证有效", _n(db, cv)),
                    ("enrolled", "进入序列", _n(db, en)), ("delivered", "送达", _n(db, dl)), ("replied", "回复", _n(db, rp)),
                    ("qualified", "合格回复", _n(db, hq)), ("accepted", "交付接受", _n(db, ha)), ("quoted", "报价", _n(db, qt)),
-                   ("won", "赢单", _n(db, won))])
+                   ("sampled", "打样", _n(db, sm)), ("won", "赢单", _n(db, won))])
 
 
 def inquiry_funnel(db: Session, since: datetime, until: datetime, owner_id=None) -> dict:

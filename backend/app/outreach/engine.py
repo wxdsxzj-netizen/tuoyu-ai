@@ -93,14 +93,18 @@ def ensure_draft(db: Session, e: Enrollment, seq: Sequence, step: SequenceStep) 
         return d
     contact = db.get(Contact, e.contact_id)
     mb = db.get(Mailbox, e.mailbox_id or (seq.mailbox_ids[0] if seq.mailbox_ids else uuid.uuid4()))
-    res = writer.write(db, seq=seq, step=step, contact=contact, sender=sender_name(db, seq, mb),
+    from app.b3 import outreach as b3
+    variant = b3.pick_variant(step, e.id)  # B3：A/B 变体按报名 ID 稳定分配
+    lang = b3.language_for(seq, contact, contact.company)  # B3：language=auto 时按收件人国家选语言
+    sq, sp = b3.writer_inputs(seq, step, variant, lang)
+    res = writer.write(db, seq=sq, step=sp, contact=contact, sender=sender_name(db, seq, mb),
                        gdpr=(country_of(contact) or "") in LIA_COUNTRIES)
     status = res["status"]
     if status == "pending_approval" and seq.autonomy == "L2" and res["qa"]["raw_score"] >= 85 and l2_enabled(db):
         status = "approved"  # L2：质检 ≥ 85 自动通过（需租户开启，试点默认关闭）
     vals = dict(subject=res["subject"], body=res["body"], facts_used=res["facts_used"], personalization=res["personalization"],
                 qa_score=res["qa"]["score"], qa_detail=res["qa"], rewrite_count=res["rewrite_count"], model=res["model"],
-                status=status, step_version=step.version, reviewed_by=None)
+                status=status, step_version=step.version, reviewed_by=None, variant=(variant or {}).get("key"), language=lang)
     if d:  # 步骤被修改：重新生成并需重新审批（BR-7-14）
         for k, v in vals.items():
             setattr(d, k, v)
@@ -179,6 +183,15 @@ def process_enrollment(db: Session, e: Enrollment, now: datetime, rng: random.Ra
         seq.status, seq.paused_reason = "paused", "budget"
         return "budget"
     contact = db.get(Contact, e.contact_id)
+    from app.b3 import outreach as b3
+    if not b3.condition_ok(step.condition, contact, contact.company):  # B3 条件分支：不满足则跳过该步
+        nxt = next((x for x in steps if x.step_no > step.step_no), None)
+        event(db, e, "skipped", "BRANCH_CONDITION", step_no=step.step_no)
+        e.current_step, e.next_run_at = (nxt.step_no if nxt else step.step_no + 1), now
+        return "branch_skip"
+    if seq.daily_cap and b3.sent_today(db, seq, now) >= seq.daily_cap:  # B3 序列级每日上限
+        _defer(db, e, now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1, hours=1), "SEQ_DAILY_CAP")
+        return "daily_cap"
     draft = ensure_draft(db, e, seq, step)
     if draft.status != "approved":
         if (e.last_gate or {}).get("awaiting") != draft.id.hex:

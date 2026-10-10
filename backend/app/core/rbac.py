@@ -50,6 +50,8 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "price.floor": ("查看成本价与底价", "See cost & floor prices"),
     "crm.admin": ("CRM 配置：分级规则、阶段、自定义字段、合并拆分、导入撤销", "CRM admin"),
     "order.manage": ("管理样品、订单与回款", "Manage samples, orders & payments"),
+    "list.manage": ("管理名单、保存搜索与订阅", "Manage lists & saved searches"),
+    "analytics.team": ("查看团队绩效、单位经济与 AI 效能", "View team performance & unit economics"),
 }
 
 SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {
@@ -60,5 +62,5 @@ SYSTEM_ROLES: dict[str, tuple[str, set[str]]] = {
                          "contact.verify", "compliance.read", "suppression.add",
                          "mailbox.read", "sequence.read", "sequence.manage",
                          "inbox.read", "inbox.reply", "handoff.accept", "crm.read", "crm.manage",
-                         "agent.run", "research.run", "analytics.read", "product.read", "order.manage"}),
+                         "agent.run", "research.run", "analytics.read", "product.read", "order.manage", "list.manage"}),
 }

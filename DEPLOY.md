@@ -209,3 +209,10 @@ bash deploy/scripts/smoke.sh https://app.example.com
 - **backend 不启动**：`$DC logs backend` 查看“生产配置不完整：……”提示并补齐 `.env.prod`。
 - **香港 / 新加坡访问大模型**：通义千问国际站使用 `TL_QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1`（需国际站 Key）。
 - **内存不足**：worker `--concurrency` 改为 2，Postgres `shared_buffers` 改为 768MB。
+
+## 15. B3 新增配置（汇率 / OCR / 黑名单 / 追踪）
+
+- `TL_FX_PROVIDER=ecb`：使用欧洲央行每日参考汇率（公开数据，只做匿名 GET，不发送任何用户数据）；默认 `mock`。每日任务 `crm.daily` 刷新。
+- OCR：后端镜像已安装 `tesseract-ocr`（chi_sim + eng），图片文档导入和名片背调直接可用，无需额外配置。
+- `TL_DNSBL_PROVIDER=dns`：每日（`b3.daily`）通过 DNS 查询 Spamhaus DBL / SURBL；域名被列入时自动暂停该域名下的发件箱并通知管理员。默认 `mock` 不查询。
+- `TL_TRACKING_HOST`：追踪域名 CNAME 目标（启用点击追踪时用）；`TL_CREDIT_PRICE_CNY`：单位经济里 1 点折合人民币。

@@ -370,3 +370,17 @@ def org_hourly_task():
             write_audit(db, tenant_id=tid, action="org.hourly", actor_type="system", after=r)
         return r
     return _each_tenant(fn, "org")
+
+
+@celery_app.task(name="b3.daily")
+def b3_daily_task():
+    """每日：发现日报（订阅的保存搜索）、每日早报、发信域名黑名单检查（M3-10 / M11-03 / M6-09）。"""
+    from app.b3.analytics import brief_tick
+    from app.b3.discovery import daily_brief_tick
+    from app.b3.outreach import blacklist_tick
+
+    def fn(db, tid):
+        r = {"discovery": daily_brief_tick(db), "briefs": brief_tick(db), "blacklisted": blacklist_tick(db)}
+        write_audit(db, tenant_id=tid, action="b3.daily", actor_type="system", after=r)
+        return r
+    return _each_tenant(fn, "b3")

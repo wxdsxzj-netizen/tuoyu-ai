@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useState } from 'react'
-import { Alert, Button, Form, Input, InputNumber, Modal, Select, Switch, Table, Tabs, Tag, Upload, message } from 'antd'
+import { Alert, Button, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tabs, Tag, Upload, message } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
 import { useAuth } from '../auth'
@@ -84,8 +84,7 @@ function Settings({ admin }: { admin: boolean }) {
         onChange={v => saveStage(r.k, { required: v })} options={['amount', 'expected_close_date', 'contact_id', 'products'].map(x => ({ value: x, label: t('b2.f_' + x) }))} /> },
     ]} />
     <h4 style={{ marginTop: 16 }}>{t('b2.gradeRules')}</h4>
-    <Alert type="info" showIcon message={t('b2.gradeHint')} description={<pre style={{ margin: 0 }}>{JSON.stringify(cfg.grade_rules, null, 1)}</pre>} />
-    {admin && <Button style={{ marginTop: 8 }} onClick={async () => { const r = await api.post('/crm/accounts:regrade'); message.success(JSON.stringify(r.data)) }}>{t('b2.regrade')}</Button>}
+    <GradeEditor rules={cfg.grade_rules} admin={admin} onSaved={load} />
     <h4 style={{ marginTop: 16 }}>{t('b2.customFields')}</h4>
     <Select value={obj} onChange={setObj} style={{ width: 160, marginBottom: 8 }} options={['account', 'opportunity', 'contact'].map(v => ({ value: v, label: t('b2.o_' + v) }))} />
     <Table rowKey="id" size="small" pagination={false} dataSource={fields} columns={[
@@ -109,6 +108,40 @@ function Settings({ admin }: { admin: boolean }) {
   </>
 }
 
+function AccountPicker({ value, onChange, exclude }: { value?: string, onChange: (v: string) => void, exclude?: string }) {
+  const { t } = useTranslation()
+  const [opts, setOpts] = useState<any[]>([])
+  const search = async (q: string) => {
+    const r = await api.get('/accounts', { params: { q: q || undefined, size: 20 } })
+    setOpts(r.data.items.filter((a: any) => a.id !== exclude).map((a: any) => ({ value: a.id, label: `${a.name}${a.domain ? ' · ' + a.domain : ''}${a.country ? ' · ' + a.country : ''}${a.grade ? ' · ' + a.grade : ''}` })))
+  }
+  useEffect(() => { search('') }, [exclude])
+  return <Select showSearch filterOption={false} style={{ width: 320 }} value={value} onChange={onChange} onSearch={search} options={opts} placeholder={t('b3.searchAccount')} />
+}
+
+const GRADE_KEYS: Record<string, string[]> = { A: ['min_amount', 'min_deals', 'active_days'], B: ['min_amount', 'min_deals', 'active_days'], C: ['min_amount', 'min_deals', 'active_days'] }
+
+function GradeEditor({ rules, admin, onSaved }: { rules: any, admin: boolean, onSaved: () => void }) {
+  const { t } = useTranslation()
+  const [r, setR] = useState<any>(rules)
+  useEffect(() => setR(rules), [rules])
+  const set = (g: string, k: string, v: any) => {
+    const cur = { ...(r[g] || {}) }
+    if (v === null || v === undefined || v === '') delete cur[k]; else cur[k] = v
+    setR({ ...r, [g]: cur })
+  }
+  const save = async () => { await api.put('/crm/settings', { grade_rules: { ...r, D: {} } }); message.success(t('b1.saved')); onSaved() }
+  return <>
+    <Table rowKey="g" size="small" pagination={false} dataSource={['A', 'B', 'C'].map(g => ({ g }))} columns={[
+      { title: t('b3.grade'), dataIndex: 'g', render: g => <Tag color={{ A: 'gold', B: 'blue', C: 'default' }[g as string]}>{g}</Tag> },
+      ...GRADE_KEYS.A.map(k => ({ title: t('b3.g_' + k), render: (_: any, row: any) => <InputNumber size="small" min={0} disabled={!admin} value={r?.[row.g]?.[k]} onChange={v => set(row.g, k, v)} /> })),
+    ]} />
+    <div style={{ color: '#888', margin: '6px 0' }}>{t('b3.gradeExplain')}</div>
+    {admin && <Space><Button type="primary" onClick={save}>{t('b1.save')}</Button>
+      <Button onClick={async () => { const x = await api.post('/crm/accounts:regrade'); message.success(t('b3.regraded', { n: x.data.changed ?? x.data.updated ?? JSON.stringify(x.data) })) }}>{t('b2.regrade')}</Button></Space>}
+  </>
+}
+
 function AccountImport() {
   const { t } = useTranslation()
   const [res, setRes] = useState<any>()
@@ -121,9 +154,10 @@ function AccountImport() {
     {res && <pre>{JSON.stringify(res.stats, null, 1)}</pre>}
     <h4 style={{ marginTop: 16 }}>{t('b2.merge')}</h4>
     <Form layout="inline">
-      <Form.Item label={t('b2.master')}><Input placeholder="ID" onChange={e => setMerge({ ...merge, master_id: e.target.value })} /></Form.Item>
-      <Form.Item label={t('b2.merged')}><Input placeholder="ID" onChange={e => setMerge({ ...merge, merged_id: e.target.value })} /></Form.Item>
-      <Button onClick={async () => { const r = await api.post('/accounts:merge', merge); message.success(t('b2.m_' + r.data.status)) }}>{t('b2.doMerge')}</Button>
+      <Form.Item label={t('b2.master')}><AccountPicker value={merge.master_id} onChange={v => setMerge({ ...merge, master_id: v })} exclude={merge.merged_id} /></Form.Item>
+      <Form.Item label={t('b2.merged')}><AccountPicker value={merge.merged_id} onChange={v => setMerge({ ...merge, merged_id: v })} exclude={merge.master_id} /></Form.Item>
+      <Button disabled={!merge.master_id || !merge.merged_id} onClick={() => Modal.confirm({ title: t('b2.doMerge'), content: t('b3.mergeConfirm'),
+        onOk: async () => { const r = await api.post('/accounts:merge', merge); message.success(t('b2.m_' + r.data.status)); setMerge({}) } })}>{t('b2.doMerge')}</Button>
     </Form>
   </>
 }

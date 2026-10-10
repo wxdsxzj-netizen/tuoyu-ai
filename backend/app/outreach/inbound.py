@@ -173,6 +173,11 @@ def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_r
             n = _same_company(db, e, "remove" if handoff_like else "pause", "same_company_handoff" if handoff_like else "same_company_reply")  # noqa: E501
             action = f"stopped (同公司{'移除' if handoff_like else '暂停'} {n})"
         event(db, e, "reply", cat.upper(), confidence=conf)
+        if cat == "referral":  # B3 M7-07：转介 → 自动建被推荐联系人（同域名）
+            from app.b3.outreach import referral_contacts
+            made = referral_contacts(db, body or "", sender, e.company_id)
+            if made:
+                action += f"；新建转介联系人 {len(made)}"
     db.flush()
     # P4：进入统一收件箱（会话归并 + 翻译），积极类回复（含非序列来信询盘）生成交付包
     from app.crm import handoff as handoff_mod

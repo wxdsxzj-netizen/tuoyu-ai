@@ -319,7 +319,7 @@ def rep_out(db, r: ResearchReport) -> dict:
     return {"id": str(r.id), "company_id": str(r.company_id), "company_name": c.name if c else None, "domain": c.domain if c else None,
             "version": r.version, "status": r.status, "sections": r.sections, "evidence": r.evidence, "risks": r.risks, "fit_score": r.fit_score,  # noqa: E501
             "credits_charged": r.credits_charged, "model": r.model, "robots_skipped": r.robots_skipped, "expires_at": _iso(r.expires_at),
-            "expired": r.expires_at < utcnow(), "created_at": _iso(r.created_at)}
+            "expired": r.expires_at < utcnow(), "created_at": _iso(r.created_at), "risk_actions": r.risk_actions or {}}
 
 
 @router.post("/research", tags=["research"])

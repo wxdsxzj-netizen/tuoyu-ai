@@ -110,6 +110,8 @@ ERROR_CODES: dict[str, tuple[int, str, str, bool]] = {
     "KB_DOC_UNSUPPORTED": (400, "不支持的文件格式", "Unsupported file type", False),
     "KB_DOC_TOO_LARGE": (413, "单个文件不能超过 100MB", "File too large (max 100MB)", False),
     "IMPORT_UNDO_EXPIRED": (409, "只能在导入后 24 小时内撤销，且只能撤销一次", "Undo only within 24h, once", False),
+    "RESEARCH_TARGET_UNRESOLVED": (422, "未能从内容中识别出公司（企业邮箱、网址或公司名）", "Could not identify a company", False),
+    "LIST_TOO_LARGE": (400, "名单成员超过上限（10 万）", "List too large", False),
     "FX_PROVIDER_UNAVAILABLE": (503, "汇率来源不可用，请手工填写汇率", "FX provider unavailable", True),
     "CRM_SANCTION_BLOCKED": (409, "交易方筛查疑似命中，已阻止", "Blocked by sanctions screening", False),
     "BILLING_INSUFFICIENT": (402, "点数余额不足", "Insufficient credits", False),
@@ -117,7 +119,7 @@ ERROR_CODES: dict[str, tuple[int, str, str, bool]] = {
     "AGENT_TOOL_FORBIDDEN": (403, "Agent 无权调用该工具", "Tool not allowed for agent", False),
     "AGENT_ROLLBACK_PARTIAL": (200, "部分动作不可回滚", "Partial rollback", False),
     "INQUIRY_RULE_LIMIT": (409, "分配规则最多 50 条", "At most 50 rules", False),
-    "RESEARCH_TARGET_UNRESOLVED": (422, "无法识别要背调的公司", "Cannot resolve company", False),
+    "RESEARCH_TARGET_UNRESOLVED": (422, "无法识别要背调的公司", "Cannot resolve company", False),  # noqa: F601
     "LLM_UNAVAILABLE": (503, "AI 服务暂不可用", "AI service unavailable", True),
 }
 

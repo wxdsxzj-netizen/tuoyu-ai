@@ -468,6 +468,22 @@ class StepIn(BaseModel):
     body_tpl: str | None = Field(None, max_length=10000)
     instructions: str | None = Field(None, max_length=2000)
     purpose: str = Field("followup", pattern="^(first|followup|breakup)$")
+    condition: dict | None = None  # B3 条件分支 {type, values}
+    variants: list[dict] | None = Field(None, max_length=4)  # B3 A/B 变体
+
+    @field_validator("condition")
+    @classmethod
+    def _cond(cls, v):
+        from app.b3.outreach import validate_condition
+        validate_condition(v)
+        return v
+
+    @field_validator("variants")
+    @classmethod
+    def _vars(cls, v):
+        for i, x in enumerate(v or []):
+            x["key"] = x.get("key") or "ABCD"[i]
+        return v
 
 
 class SequenceIn(BaseModel):
@@ -480,6 +496,8 @@ class SequenceIn(BaseModel):
     deadline: date | None = None
     window_start: int = Field(8, ge=0, le=23)
     window_end: int = Field(17, ge=1, le=24)
+    daily_cap: int | None = Field(None, ge=1, le=10000)  # B3
+    tracking: dict | None = None  # B3 {open: bool, click: bool}
     steps: list[StepIn] | None = None
 
     @field_validator("deadline")
@@ -499,6 +517,9 @@ class SequencePatch(BaseModel):
     deadline: date | None = None
     window_start: int | None = Field(None, ge=0, le=23)
     window_end: int | None = Field(None, ge=1, le=24)
+    daily_cap: int | None = Field(None, ge=1, le=10000)
+    tracking: dict | None = None
+    language: str | None = Field(None, max_length=8)
 
 
 class StepOut(ORM):
@@ -511,6 +532,8 @@ class StepOut(ORM):
     instructions: str | None
     purpose: str
     version: int
+    condition: dict | None = None
+    variants: list[dict] | None = None
 
 
 class SequenceOut(ORM):
@@ -526,6 +549,9 @@ class SequenceOut(ORM):
     sent_count: int
     window_start: int
     window_end: int
+    daily_cap: int | None = None
+    tracking: dict | None = None
+    template_key: str | None = None
     paused_reason: str | None
     review_note: str | None
     created_at: datetime
@@ -567,6 +593,7 @@ def create_sequence(body: SequenceIn, request: Request, cu: CurrentUser = Depend
     _check_mailboxes(db, body.mailbox_ids)
     _check_autonomy(db, body.autonomy)
     data = body.model_dump(exclude={"steps"})
+    data["tracking"] = data.get("tracking") or {}
     s = Sequence(**data, owner_id=cu.id, created_by=cu.id)
     db.add(s)
     db.flush()
@@ -706,12 +733,14 @@ def sequence_action(sid: uuid.UUID, action: str, request: Request, body: dict | 
         s.status = "archived"
     elif action == "copy":
         c = Sequence(name=f"{s.name}（副本）"[:128], icp_id=s.icp_id, mailbox_ids=s.mailbox_ids, autonomy=s.autonomy, language=s.language,
-                     send_limit=s.send_limit, window_start=s.window_start, window_end=s.window_end, owner_id=cu.id, created_by=cu.id)
+                     send_limit=s.send_limit, window_start=s.window_start, window_end=s.window_end, owner_id=cu.id, created_by=cu.id,
+                     daily_cap=s.daily_cap, tracking=dict(s.tracking or {}), template_key=s.template_key)
         db.add(c)
         db.flush()
         for st in engine.steps_of(db, s.id):
             db.add(SequenceStep(sequence_id=c.id, step_no=st.step_no, wait_days=st.wait_days, mode=st.mode, subject_tpl=st.subject_tpl,
-                                body_tpl=st.body_tpl, instructions=st.instructions, purpose=st.purpose))
+                                body_tpl=st.body_tpl, instructions=st.instructions, purpose=st.purpose,
+                                condition=st.condition, variants=st.variants))
         audit(db, cu, request, "sequence.copy", "sequence", c.id, source=str(s.id))
         db.commit()
         return seq_out(db, c)

@@ -136,6 +136,15 @@ def write(db: Session, *, seq: Sequence, step: SequenceStep, contact: Contact, s
     """返回 {subject, body, facts_used, personalization, qa, rewrite_count, model, status}。"""
     kb = knowledge(db)
     company = contact.company
+    if company:  # B3 M7-03：把最新背调的切入点 / 邮件要点作为个性化素材
+        from app.models import ResearchReport
+        rep = db.scalar(select(ResearchReport).where(ResearchReport.company_id == company.id, ResearchReport.status == "ok")
+                        .order_by(ResearchReport.version.desc()).limit(1))
+        if rep:
+            pts = [str(it.get("text") if isinstance(it, dict) else it) for sec in rep.sections or [] if sec.get("key") in ("entry", "email_points")  # noqa: E501
+                   for it in (sec.get("items") or [])][:5]
+            if pts:
+                kb = {**kb, "text": kb["text"] + "\n[research] " + " | ".join(pts)}
     if seq.icp_id:
         icp = db.get(Icp, seq.icp_id)
         if icp:

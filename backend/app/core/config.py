@@ -28,7 +28,11 @@ class Settings(BaseSettings):
     llm_timeout_s: float = 60.0
 
     # P6：点数 / Agent / 询盘评分（均可通过环境变量调整）
-    fx_provider: str = "mock"  # mock：内置参考汇率，不访问外网
+    fx_provider: str = "mock"  # mock：内置参考汇率，不访问外网；ecb：欧洲央行每日参考汇率（公开数据）
+    tracking_host: str = "track.tuoyu.example"  # 追踪域名 CNAME 目标（启用点击追踪时）
+    credit_price_cny: float = 0.1  # 单位经济：1 点折合人民币
+    dnsbl_provider: str = "mock"  # mock：不查询；dns：通过 DNS 查询公共黑名单（生产建议开启）
+    fx_ecb_url: str = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
     pilot_grant_credits: float = 0.0  # 新租户首次使用时自动发放的点数；默认 0 = 只能由平台管理员手动充值
     agent_overrun_basis: str = "high"  # 自动暂停的参照：high（预估上限，默认）| mid（预估中位数，PRD 原文）
     agent_overrun_ratio: float = 1.0  # 实际消耗 > 参照 × 比例 时自动暂停

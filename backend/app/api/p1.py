@@ -530,6 +530,9 @@ class ContactIn(BaseModel):
     phone: str | None = Field(None, max_length=64)
     linkedin_url: str | None = Field(None, max_length=512)
     country: str | None = None
+    whatsapp: str | None = Field(None, pattern=r"^\+?[0-9 ()-]{6,32}$")
+    seniority: str | None = Field(None, pattern="^(c_level|vp|director|manager|staff)$")
+    language: str | None = Field(None, max_length=16)
 
 
 class ContactOut(ORM):
@@ -551,6 +554,9 @@ class ContactOut(ORM):
     phone: str | None
     linkedin_url: str | None
     country: str | None
+    whatsapp: str | None = None
+    seniority: str | None = None
+    language: str | None = None
     source: str
     created_at: datetime
     restricted: bool = False

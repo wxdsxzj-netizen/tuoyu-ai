@@ -226,6 +226,7 @@ class Contact(TenantScoped, Base):
     do_not_contact_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     account_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     company: Mapped[Company | None] = relationship(lazy="joined")
+    whatsapp: Mapped[str | None] = mapped_column(String(32), nullable=True)  # B3 M2-03
 
 
 class ImportJob(TenantScoped, Base):
@@ -553,6 +554,11 @@ class Sequence(TenantScoped, Base):
     submitted_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    daily_cap: Mapped[int | None] = mapped_column(Integer, nullable=True)  # B3 序列级每日上限
+    credit_budget: Mapped[float | None] = mapped_column(Float, nullable=True)  # B3 序列级点数预算
+    credits_used: Mapped[float] = mapped_column(Float, default=0, server_default="0")
+    tracking: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")  # B3 追踪策略 {open, click}
+    template_key: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class SequenceStep(TenantOwned, Base):
@@ -568,6 +574,8 @@ class SequenceStep(TenantOwned, Base):
     instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     purpose: Mapped[str] = mapped_column(String(16), default="first")  # first / followup / breakup
     version: Mapped[int] = mapped_column(Integer, default=1)
+    condition: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # B3 条件分支
+    variants: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # B3 A/B 变体 [{key, subject_tpl, body_tpl, instructions}]
 
 
 class Enrollment(TenantScoped, Base):
@@ -608,6 +616,8 @@ class MessageDraft(TenantScoped, Base):
     # needs_edit / pending_approval / approved / rejected / sent / blocked
     reviewed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    variant: Mapped[str | None] = mapped_column(String(4), nullable=True)  # B3 A/B
+    language: Mapped[str | None] = mapped_column(String(5), nullable=True)
 
 
 class OutboundMessage(TenantScoped, Base):
@@ -963,6 +973,7 @@ class ResearchReport(TenantScoped, Base):
     robots_skipped: Mapped[list | None] = mapped_column(JSONB, default=list)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    risk_actions: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")  # B3 风险处置 {idx: {action, note, by, at}}
 
 
 class Invoice(TenantOwned, Base):
@@ -1276,3 +1287,54 @@ class Meeting(TenantScoped, Base):
     end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     attendees: Mapped[list] = mapped_column(JSONB, default=list)
     minutes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ======================= B3：发现、名单、序列与分析补全 =======================
+class ProspectList(TenantScoped, Base):
+    """名单（M3-11）：static = 手工成员；dynamic = 按条件实时计算。"""
+    __tablename__ = "prospect_lists"
+    name: Mapped[str] = mapped_column(String(100))
+    kind: Mapped[str] = mapped_column(String(8), default="static")
+    object_type: Mapped[str] = mapped_column(String(8), default="contact")  # contact / company
+    filters: Mapped[dict] = mapped_column(JSONB, default=dict)
+    member_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class SavedSearch(TenantScoped, Base):
+    """保存搜索 / 订阅（M2-15、M3-10 发现日报）。"""
+    __tablename__ = "saved_searches"
+    name: Mapped[str] = mapped_column(String(100))
+    query: Mapped[dict] = mapped_column(JSONB, default=dict)
+    subscribed: Mapped[bool] = mapped_column(Boolean, default=False)
+    seen_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class ExclusionRule(TenantScoped, Base):
+    """排除规则（M3-13）：domain / company / country / keyword / existing_customer。"""
+    __tablename__ = "exclusion_rules"
+    rule_type: Mapped[str] = mapped_column(String(20))
+    value: Mapped[str] = mapped_column(String(200))
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+class ReportShare(TenantScoped, Base):
+    """背调报告分享链接（M4-12）。"""
+    __tablename__ = "report_shares"
+    report_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    views: Mapped[int] = mapped_column(Integer, default=0)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class BlacklistCheck(TenantScoped, Base):
+    """DNSBL 黑名单检查结果（M6-09）。"""
+    __tablename__ = "blacklist_checks"
+    target: Mapped[str] = mapped_column(String(253))
+    target_type: Mapped[str] = mapped_column(String(8))  # domain / ip
+    listed_on: Mapped[list] = mapped_column(JSONB, default=list)
+    checked: Mapped[list] = mapped_column(JSONB, default=list)
+    provider: Mapped[str] = mapped_column(String(16), default="mock")

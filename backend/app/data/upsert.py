@@ -41,6 +41,9 @@ def upsert_contact(db: Session, values: dict, *, company: Company | None, actor_
                    force_new=False) -> UpsertResult:
     values = dict(values)
     values["email_normalized"] = normalize_email(values.get("email"))
+    if values.get("title") and not values.get("seniority"):  # B3 M2-03：按职位推断职级
+        from app.b3.discovery import seniority_of
+        values["seniority"] = seniority_of(values["title"])
     m = match_contact(db, email=values.get("email"), full_name=values.get("full_name"),
                       company_id=company.id if company else None)
     if m.kind == "exact":

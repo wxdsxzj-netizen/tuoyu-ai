@@ -228,9 +228,38 @@ def fetch_rates() -> tuple[dict, str]:
     if _fx_fetcher:
         return _fx_fetcher()
     from app.core.config import get_settings
-    if getattr(get_settings(), "fx_provider", "mock") == "mock":
+    st = get_settings()
+    if st.fx_provider == "mock":
         return dict(MOCK_RATES), "mock"
+    if st.fx_provider == "ecb":
+        return fetch_ecb(st.fx_ecb_url), "ecb"
     raise AppError("FX_PROVIDER_UNAVAILABLE")
+
+
+ECB_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+
+
+def parse_ecb(xml: str) -> dict:
+    """ECB 每日参考汇率（1 EUR = x 外币）换算为“1 外币 = ? 人民币”。"""
+    rates = {m.group(1): float(m.group(2)) for m in re.finditer(r"currency=['\"]([A-Z]{3})['\"]\s+rate=['\"]([\d.]+)['\"]", xml)}
+    if "CNY" not in rates:
+        raise AppError("FX_PROVIDER_UNAVAILABLE", details={"reason": "ECB 数据缺少 CNY"})
+    cny = rates["CNY"]
+    out = {c: round(cny / r, 6) for c, r in rates.items() if r > 0}
+    out["EUR"], out["CNY"] = round(cny, 6), 1.0
+    return out
+
+
+def fetch_ecb(url: str | None = None, client=None) -> dict:
+    """只发起一次匿名 GET 获取公开数据，不发送任何用户数据。"""
+    import httpx
+    try:
+        c = client or httpx.Client(timeout=15, headers={"User-Agent": "TradeLeads-FX/1.0"})
+        r = c.get(url or ECB_URL)
+        r.raise_for_status()
+        return parse_ecb(r.text)
+    except httpx.HTTPError as e:
+        raise AppError("FX_PROVIDER_UNAVAILABLE", details={"reason": str(e)[:200]}) from None
 
 
 def refresh_fx(db: Session, day: date | None = None) -> int:

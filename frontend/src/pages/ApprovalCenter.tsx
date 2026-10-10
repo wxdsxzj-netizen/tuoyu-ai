@@ -26,9 +26,20 @@ export default function ApprovalCenterPage() {
       title: approve ? t('b1.approve') : t('b1.reject'),
       content: <><div>{t('b1.confirmCount', { n: ids.length })}</div><Input.TextArea onChange={e => { comment = e.target.value }} placeholder={t('b1.comment')} /></>,
       onOk: async () => {
-        if (ids.length === 1) await api.post(`/approval-requests/${ids[0]}:decide`, { approve, comment })
-        else await api.post('/approval-requests:batch-decide', { ids, approve, comment, confirm_send: true })
-        message.success(t('b1.done')); setSel([]); load()
+        const rows = items.filter(x => ids.includes(x.id))
+        const uni = rows.filter(x => x.unified).map(x => x.id)
+        if (uni.length === 1) await api.post(`/approval-requests/${uni[0]}:decide`, { approve, comment })
+        else if (uni.length > 1) await api.post('/approval-requests:batch-decide', { ids: uni, approve, comment, confirm_send: true })
+        const failed: string[] = []
+        for (const tp of ['content', 'quote', 'agent', 'inquiry_review']) {  // 旧审批（内容/报价/Agent/询盘复核）按类型批量处理，权限规则同统一审批
+          const lid = rows.filter(x => !x.unified && x.type === tp).map(x => x.id)
+          if (!lid.length) continue
+          const r = await api.post('/approvals-center/legacy:batch-decide', { type: tp, ids: lid, approve, comment, confirm_send: true })
+          for (const [id, v] of Object.entries(r.data as Record<string, string>)) if (/^[A-Z][A-Z0-9_]+$/.test(v)) failed.push(`${id.slice(0, 8)}：${v}`)
+        }
+        if (failed.length) message.warning(t('b3.batchPartial', { n: failed.length }) + ' ' + failed.slice(0, 3).join('；'))
+        else message.success(t('b1.done'))
+        setSel([]); load()
       },
     })
   }
@@ -44,7 +55,7 @@ export default function ApprovalCenterPage() {
         <Button disabled={!sel.length} danger onClick={() => decide(sel, false)}>{t('b1.batchReject')}</Button>
       </Space>
       <Table rowKey="id" size="small" dataSource={items} pagination={{ pageSize: 20 }}
-        rowSelection={{ selectedRowKeys: sel, onChange: k => setSel(k as string[]), getCheckboxProps: (r: any) => ({ disabled: !r.unified }) }}
+        rowSelection={{ selectedRowKeys: sel, onChange: k => setSel(k as string[]), }}
         columns={[
           { title: t('b1.type'), dataIndex: 'label', render: (v, r: any) => <Tag color={r.overdue ? 'red' : 'blue'}>{v}</Tag> },
           { title: t('b1.title'), dataIndex: 'title' },
@@ -53,7 +64,10 @@ export default function ApprovalCenterPage() {
           { title: '', render: (_, r: any) => r.unified ? <Space>
             <Button size="small" type="primary" onClick={() => decide([r.id], true)}>{t('b1.approve')}</Button>
             <Button size="small" danger onClick={() => decide([r.id], false)}>{t('b1.reject')}</Button></Space>
-            : <Button size="small" onClick={() => nav(r.link)}>{t('b1.goHandle')}</Button> },
+            : <Space>
+            <Button size="small" type="primary" onClick={() => decide([r.id], true)}>{t('b1.approve')}</Button>
+            <Button size="small" danger onClick={() => decide([r.id], false)}>{t('b1.reject')}</Button>
+            <Button size="small" onClick={() => nav(r.link)}>{t('b1.goHandle')}</Button></Space> },
         ]} />
     </> },
     { key: 'mine', label: t('b1.myRequests'), children: <Table rowKey="id" size="small" dataSource={mine} columns={[
