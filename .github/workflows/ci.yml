@@ -52,7 +52,8 @@ jobs:
             chmod +x "$RUNNER_TEMP/restore-pg/$tool"
           done
           export RESTORE_PG_BIN="$RUNNER_TEMP/restore-pg"
-          python -m unittest discover -s deploy/tests -v
+          python -m unittest discover -s deploy/tests -p test_backup.py -v
+          python -m unittest discover -s deploy/tests -p "test_restore*.py" -v
   frontend:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: frontend } }
@@ -75,6 +76,14 @@ jobs:
         run: |
           docker build -t tuoyu-backend:ci backend
           docker build -t tuoyu-web:ci -f frontend/Dockerfile.prod frontend
+      - name: 生产镜像 Caddy 公开路由回归
+        run: |
+          audit_caddy_container=$(docker create tuoyu-web:ci)
+          trap 'docker rm -f -v "$audit_caddy_container" >/dev/null' EXIT
+          docker cp "$audit_caddy_container:/usr/bin/caddy" "$RUNNER_TEMP/audit-caddy"
+          chmod +x "$RUNNER_TEMP/audit-caddy"
+          "$RUNNER_TEMP/audit-caddy" version
+          CADDY_BIN="$RUNNER_TEMP/audit-caddy" python3 -m unittest discover -s deploy/tests -p test_public_routes.py -v
       - name: 备份监控规则回归
         run: docker run --rm -v "$PWD/deploy/monitoring:/rules:ro" -w /rules --entrypoint promtool prom/prometheus:v2.54.1 test rules alerts.test.yml
       - name: 脚本语法
