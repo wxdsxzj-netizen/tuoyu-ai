@@ -494,7 +494,9 @@ def test_reply_categories_ooo_unsub_and_imap(client):
         assert r["enrolled"] == 0 and r["results"][0]["blocks"][0]["code"] == "COOLDOWN"
         # IMAP 拉取（假连接）：退信 DSN
         bounce_raw = (b"From: MAILER-DAEMON@mx.example\r\nSubject: Undelivered Mail Returned to Sender\r\n"
-                      b"In-Reply-To: " + ids["ooo@one.com"].encode() + b"\r\n\r\nThe following address failed: ooo@one.com 550 user unknown\r\n")
+                      b"In-Reply-To: " + ids["ooo@one.com"].encode() +
+                      b"\r\n\r\nFinal-Recipient: rfc822; ooo@one.com\r\nAction: failed\r\nStatus: 5.1.1\r\n"
+                      b"Diagnostic-Code: smtp; 550 user unknown\r\n")
 
         class FakeImap:
             def select(self, *_):

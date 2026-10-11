@@ -206,6 +206,7 @@ def test_migration_scrubs_legacy_secret_bodies(client):
     from pathlib import Path
 
     from alembic.config import Config
+    from sqlalchemy import text
 
     from alembic import command
 
@@ -213,10 +214,15 @@ def test_migration_scrubs_legacy_secret_bodies(client):
     cfg = Config(str(root / "alembic.ini"))
     cfg.set_main_option("script_location", str(root / "alembic"))
     command.downgrade(cfg, "0014")
-    with SessionLocal.begin() as db:
-        db.add(IdempotencyKey(scope="legacy", key="old-secret", fingerprint="legacy", status_code=200,
-                              body='{"secret":"synthetic-legacy-secret"}'))
-    command.upgrade(cfg, "head")
+    try:
+        with SessionLocal.begin() as db:
+            # Use the historical schema, not the current ORM with new columns.
+            db.execute(text("INSERT INTO idempotency_keys (id, scope, key, fingerprint, status_code, body, created_at) "
+                            "VALUES (gen_random_uuid(), 'legacy', 'old-secret', 'legacy', 200, :body, now())"),
+                       {"body": '{"secret":"synthetic-legacy-secret"}'})
+    finally:
+        command.upgrade(cfg, "head")
     with SessionLocal() as db:
         row = db.scalar(select(IdempotencyKey).where(IdempotencyKey.scope == "legacy"))
         assert row.status_code == 409 and row.body == ""
+        assert row.tenant_id is None and row.discard_response

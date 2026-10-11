@@ -14,22 +14,22 @@
 | S2 | P1 | SSRF 防护没有覆盖重定向与所有抓取入口 | 已修且测试通过：21 个定向函数/HTTP 栈测试；另有隔离数据库全套回归 |
 | S3 | P1 | 幂等缓存先于认证返回 且遗漏 API key 身份边界 | 已修且测试通过：当前认证/权限、API key/租户范围、query/TTL、一次性秘密回归通过 |
 | S4 | P1 | 幂等只缓存结果 无法阻止并发重复副作用 | 已修且测试通过：真实 PostgreSQL 并发 HTTP 仅一笔提交；未知结果不重试 |
-| S5 | P1 | DSR 删除标记完成 但主要邮件副本及联系字段未擦除 | 待修 |
+| S5 | P1 | DSR 删除标记完成 但主要邮件副本及联系字段未擦除 | 普通副本已修且32项回归通过；保留/共享来源办理规则待业务决定，非空待核查清单会阻止完成 |
 | S6 | P1 | 管理员可修改审批策略 自批本应由所有者批准的导出 | 已修且测试通过：真实 HTTP + PostgreSQL，4 个新增回归及 5 个 B1 回归通过 |
 | S7 | P1 | 租户管理员能自审共享纠错且缺少字段白名单 | 已修且测试通过：9 个新增 HTTP/PostgreSQL 回归 + 3 个 B6 回归 |
-| O-01 | P1 | 外发成功后批量事务回滚 下一轮重复发信；并发没有领取锁 | 待修 |
-| O-02 | P1 | 引用自家退订页脚的真实询盘 被永久当成退订 | 待修 |
-| O-03 | P1 | 暂时延迟 DSN 被升级为永久 平台退信 | 待修 |
-| O-04 | P2 | 软失败计数每轮清零 指数退避及三次切箱永远失效 | 待修 |
-| O-05 | P1 | 发送前最新规则要求审批 但代码仅拦 deny 直接发出 | 待修 |
+| O-01 | P1 | 外发成功后批量事务回滚 下一轮重复发信；并发没有领取锁 | 已修且测试通过：持久业务发送意图、逐条提交、双数据库会话领取、真实事务中止和进程退出；未知结果人工核查 |
+| O-02 | P1 | 引用自家退订页脚的真实询盘 被永久当成退订 | 已修且测试通过：抽取本次正文，保留原文；纯文本、多语言、HTML 引用及真实询盘落库回归 |
+| O-03 | P1 | 暂时延迟 DSN 被升级为永久 平台退信 | 已修且测试通过：结构化逐收件人 DSN、原邮件关联；4.x/未知/策略失败不写永久退信 |
+| O-04 | P2 | 软失败计数每轮清零 指数退避及三次切箱永远失效 | 已修且测试通过：持久次数、10/20/40分钟退避、失败邮箱排除、耗尽核查与明确恢复 |
+| O-05 | P1 | 发送前最新规则要求审批 但代码仅拦 deny 直接发出 | 已修且测试通过：地区/规则/收件人证据绑定审批，审批人失效或证据变化需重审，deny 不可审批绕过 |
 | O-06 | P1 | 低毛利报价经销售员普通编辑变为零成本 从而免审批 | 已修且测试通过：稳定行 ID、可信成本、版本冲突与真实销售编辑回归 |
 | O-07 | P1 | 报价请求 schema 丢弃 SKU ID 底价审批闸门无法正常触发 | 已修且测试通过：本租户 SKU 解析、可信成本、折后底价与错误引用拒绝 |
 | O-08 | P2 | 跨会话询盘“合并”只加计数 消息 交付与首次响应不连通 | 待修 |
-| O-09 | P1 | 成交停止触达漏掉 scheduled 已成交客户仍可收到冷邮件 | 待修 |
-| O-10 | P2 | 自动回复可恢复人工暂停 同公司暂停 | 待修 |
+| O-09 | P1 | 成交停止触达漏掉 scheduled 已成交客户仍可收到冷邮件 | 已修且测试通过：停止全部 LIVE 状态及公司关联联系人，最终发送前再次检查客户阶段 |
+| O-10 | P2 | 自动回复可恢复人工暂停 同公司暂停 | 已修且测试通过：OOO 仅顺延 scheduled/active，人工、同公司、合规暂停均保留 |
 | O-11 | P2 | 聊天人工答复不更新询盘首响 SLA误告警和改派 | 待修 |
 | O-12 | P2 | 入站去重和 IMAP 游标恢复不完整 | 待修 |
-| O-13 | P2 | catch all 风险额度只显示提示 没有发送强制校验 | 待修 |
+| O-13 | P2 | catch all 风险额度只显示提示 没有发送强制校验 | 已修且测试通过：租户UTC日域名≤1、单邮箱catch-all实际占比≤10%，预留纳入额度；不再宣称未定义角色邮箱独立额度 |
 | F00 | P1 | 生产发布网站URL被SPA吞掉 | 已修且测试通过：真实本地 Caddy 3 个路由测试（4 个公开路径及静态/私有路径） |
 | F01 | P1 | 报价隐藏成本回写问题已合并 | 与 O-06 合并，已修且测试通过 |
 | F02 | P1 | 收件箱竞态可能把显示A的回复发送给B | 已修且测试通过：4 个真实 React 组件异步交互回归；lint / tsc / build 通过 |
@@ -69,3 +69,37 @@
 | OPS-04 | P2 | 多进程 HTTP 指标未聚合 | 待修 |
 | OPS-05 | P2 | 运维手册与恢复顺序需要演练校正 | 待修 |
 
+
+## S5 本地修复验证
+
+跨模块清单、完成条件和迁移见 [DSR 删除说明](docs/audit/dsr-erasure.md)。原3项副本/导出失败断言全部失败，迟到缓存另有失败断言；修复后7项新增 + S1/S3/S4/B1/B4 共32 passed / 51.73s，真实 PostgreSQL，含两个独立事务的导出/删除并发。此前普通副本 + P3/B1 共24 passed / 184.50s。Ruff与diff检查通过。
+
+命令：`TL_SECRETS_FILE=/dev/null TL_DATABASE_URL="$AUDIT_DATABASE_URL" TL_REDIS_URL="$AUDIT_REDIS_URL" .venv/bin/python -m pytest -q -p no:cacheprovider backend/tests/test_audit_dsr_erasure.py backend/tests/test_audit_dsr_scope.py backend/tests/test_audit_idempotency.py backend/tests/test_b1.py backend/tests/test_b4.py`。
+
+新增0016迁移。对不可变证据、源归档、共享平台来源和精确邮箱仍命中的未分类载荷，保留分类计数并拒绝自动完成，未自行决定保留期限或修改平台/其他租户数据。此批是首批汇总之后的独立本地提交，尚未推送。
+
+## 入站邮件修复验证
+
+O-02/O-03/O-10：最初12项中11项失败，修复后12项通过；扩展 MIME/引用处理后，新回归与 P3/P4 共36 passed / 235.09s。最终进一步区分永久地址失败和策略/消息失败，当前18项新增回归与5项合规/成交回归共23 passed / 14.68s。真实隔离 PostgreSQL，外发仅本地测试接收器/替身。
+
+永久地址抑制仅接受关联原邮件、目标收件人一致、Action=failed 且明确地址类状态；临时失败、未知报告、策略拒收和消息大小错误转临时状态或人工核查。依据：[RFC 3464](https://www.rfc-editor.org/rfc/rfc3464.html)、[RFC 3463](https://www.rfc-editor.org/rfc/rfc3463.html)。此次无数据库迁移；回滚会恢复有缺陷的入站分类，不建议单独回退。
+
+命令：`TL_SECRETS_FILE=/dev/null TL_DATABASE_URL="$AUDIT_DATABASE_URL" TL_REDIS_URL="$AUDIT_REDIS_URL" .venv/bin/python -m pytest -q -p no:cacheprovider backend/tests/test_audit_inbound.py backend/tests/test_p3.py backend/tests/test_p4.py`；最终增补运行 `test_audit_inbound.py test_audit_send_gates.py`。
+
+## 最终审批与成交停止
+
+O-05/O-09 原3项失败断言修复通过；补充审批人停用、deny 不可越过、成交后迟到注册，共6项真实数据库/HTTP 回归通过。审批同时需要现行 sequence.approve 权限；最终发送检查客户阶段，成交事务对全部 LIVE 注册加锁终止。无迁移。P3/P4 扩展回归单独记录；SMTP 并发和事务失败仍由 O-01 处理，未因本项关闭而视为发送可靠性已解决。
+
+扩展结果：上述前5项 + P3/P4 共25 passed / 220.92s；迟到注册最终闸门随后纳入发送可靠性回归。
+
+## 发送可靠性与核查闭环
+
+详见 [发送可靠性与回退说明](docs/audit/delivery-reliability.md)。新增0017迁移。序列发送和人工回复共用持久意图；对未知结果保持凭据并停止自动重试。新增投递核查页面，明确结论/证据/权限/租户边界，只有已证实未接收才允许重试。
+
+验证：原3类发送失败断言及人工回复失败已复现；catch-all 未执行额度也有失败断言。发送/审批/DSR + 既有P3/P4扩展41 passed / 238.11s；最后补充真实 PostgreSQL 事务中止、子进程退出、并发额度及核查恢复后，定向28 passed。前端12 passed，lint无错误（12项既有Hook警告），TypeScript/生产build通过（既有大chunk提示）；Ruff/diff检查通过。
+
+命令：`TL_SECRETS_FILE=/dev/null TL_DATABASE_URL="$AUDIT_DATABASE_URL" TL_REDIS_URL="$AUDIT_REDIS_URL" .venv/bin/python -m pytest -q -p no:cacheprovider backend/tests/test_audit_delivery_intents.py backend/tests/test_audit_dsr_erasure.py backend/tests/test_audit_send_gates.py`；扩展增加 `backend/tests/test_p3.py backend/tests/test_p4.py`。前端：`npm test`、`npm run lint`、`npm run build`。
+
+完整冻结快照 `cf68b8d944b55600abb4ed68297d30c7793ceb39` 全后端293 passed / 1 skipped / 1 warning，540.84s。OCR跳过仍因本机缺tesseract。此结果覆盖核查功能最终版本；首批247项是较早快照的独立证据。
+
+首批已发布到修复分支：代码汇总 `0b38d4efb456abac9eeff4a2e2fd6b335a2cf07e`，映射文档提交 `68f0fe002df3a809d99f5d786f3cd6dbfe630ce0`。上传授权阻塞已解除；仍未合并或部署。第二批验证与版本边界见 [第二批记录](docs/audit/2026-10-11-batch02.md)。

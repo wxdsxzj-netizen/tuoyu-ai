@@ -55,7 +55,7 @@ def check_contact(db: Session, contact: Contact, *, channel: str = "email", reve
         elif stale:
             warnings.append({"code": "VERIFY_STALE", "detail": "超过 7 天未验证，排期前将复验"})
         if contact.is_role_email:
-            warnings.append({"code": "ROLE_EMAIL", "detail": "角色邮箱计入单独配额，首封须为通用版本"})
+            warnings.append({"code": "ROLE_EMAIL", "detail": "角色邮箱，建议人工确认；catch-all 地址同时受风险额度约束"})
     # 3. 制裁筛查（公司 + 联系人）
     company = contact.company
     from app.compliance.sanctions import screen_subject

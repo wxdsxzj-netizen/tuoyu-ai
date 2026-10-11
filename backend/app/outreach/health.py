@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.db import utcnow
-from app.models import BreakerEvent, Mailbox, MailboxMetricDaily, SendingDomain
+from app.models import BreakerEvent, Mailbox, MailboxMetricDaily, OutboundMessage, SendingDomain
 
 LEVEL_FACTOR = {"normal": 1.0, "watch": 0.7, "slow": 0.5, "paused": 0.0}
 SENDABLE_STATUS = {"warming", "active", "recovering"}
@@ -50,7 +50,11 @@ def daily_cold_limit(mb: Mailbox) -> int:
 
 
 def remaining_today(db: Session, mb: Mailbox) -> int:
-    return max(daily_cold_limit(mb) - today_metric(db, mb).sent_cold, 0)
+    from app.outreach.intents import RESERVED
+    pending = db.scalar(select(func.count()).select_from(OutboundMessage).where(
+        OutboundMessage.mailbox_id == mb.id, OutboundMessage.kind == "cold", OutboundMessage.status.in_(RESERVED),
+        OutboundMessage.sent_at >= utcnow().replace(hour=0, minute=0, second=0, microsecond=0)))
+    return max(daily_cold_limit(mb) - today_metric(db, mb).sent_cold - pending, 0)
 
 
 def rates_7d(db: Session, mb: Mailbox) -> dict:

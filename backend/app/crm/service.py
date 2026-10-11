@@ -4,7 +4,7 @@ import secrets
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
@@ -83,8 +83,13 @@ def change_stage(db: Session, opp: Opportunity, stage: str, lost_reason: str | N
         after_qualified_event(db, opp, "deal.won", {"opportunity_id": str(opp.id)})
         from app.crm.b2 import repurchase_task
         repurchase_task(db, opp)  # M10-34
-        ids = [c.id for c in db.scalars(select(Contact).where(Contact.account_id == acc.id))]
-        for e in db.scalars(select(Enrollment).where(Enrollment.contact_id.in_(ids), Enrollment.status.in_(("active", "paused", "pending_approval")))) if ids else []:  # noqa: E501
+        from app.outreach.engine import LIVE
+        links = [Contact.account_id == acc.id]
+        if acc.company_id:
+            links.append(Contact.company_id == acc.company_id)
+        ids = list(db.scalars(select(Contact.id).where(or_(*links))))
+        for e in db.scalars(select(Enrollment).where(Enrollment.contact_id.in_(ids), Enrollment.status.in_(LIVE))
+                           .with_for_update()) if ids else []:
             e.status, e.ended_reason, e.next_run_at = "removed", "opportunity_won", None  # BR-10-14
             removed += 1
     opp.prev_stage = opp.stage if opp.stage != "lost" else opp.prev_stage

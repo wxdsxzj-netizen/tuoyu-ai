@@ -245,6 +245,8 @@ def reply_gate(db: Session, c: Conversation, to_email: str) -> dict:
     from app.compliance.gate import check_contact
     from app.compliance.suppression import check_suppressed
     contact = db.get(Contact, c.contact_id) if c.contact_id else None
+    if not to_email or (contact and contact.deleted_at):
+        return {"decision": "deny", "blocks": [{"code": "NO_EMAIL"}]}
     if contact and contact.email_normalized == normalize_email(to_email):
         g = check_contact(db, contact)
         blocks = [b for b in g["blocks"] if b["code"] in REPLY_BLOCKING]
@@ -269,7 +271,12 @@ def reply_qa(db: Session, body: str) -> dict:
 
 
 def send_reply(db: Session, c: Conversation, *, body: str, user, subject: str | None = None, mailbox_id=None) -> Message:
-    from app.outreach import health, transport
+    from app.models import SendIntent
+    from app.outreach import health, intents, transport
+    db.flush()
+    intents.lock_tenant(db)
+    db.expire_all()
+    db.refresh(c, with_for_update={"of": Conversation})
     if c.status == "spam":
         raise AppError("COMMON_INVALID_STATE")
     to = c.peer_email
@@ -290,6 +297,18 @@ def send_reply(db: Session, c: Conversation, *, body: str, user, subject: str | 
         raise AppError("SEQ_NO_MAILBOX")
     base_subj = subject or (last_in.subject if last_in else c.subject) or ""
     subj = base_subj if RE_PREFIX.match(base_subj) else f"Re: {base_subj}"
+    request_hash = intents.fingerprint(str(c.id), str(last_in.id) if last_in else None, to, body, subj, str(mb.id))
+    key = "reply:" + request_hash
+    prior = intents.slot(db, key)
+    if prior:
+        if prior.state == "sent" and prior.result_message_id:
+            return db.get(Message, prior.result_message_id)
+        if prior.state != "retryable":
+            raise AppError("DELIVERY_OUTCOME_UNKNOWN", details={"intent_id": str(prior.id), "state": prior.state})
+    pending = db.scalar(select(SendIntent).join(OutboundMessage, OutboundMessage.id == SendIntent.outbound_id).where(
+        OutboundMessage.snapshot["conversation_id"].astext == str(c.id), SendIntent.state.in_(intents.RESERVED)).limit(1))
+    if pending:
+        raise AppError("DELIVERY_OUTCOME_UNKNOWN", details={"intent_id": str(pending.id), "state": pending.state})
     msg = EmailMessage(policy=policy.SMTP.clone(max_line_length=998))
     mid = make_msgid(domain=mb.address.split("@")[-1])
     msg["Message-ID"], msg["From"], msg["To"], msg["Subject"] = mid, formataddr((user.name or mb.display_name or "", mb.address)), to, subj[:256]  # noqa: E501
@@ -300,15 +319,35 @@ def send_reply(db: Session, c: Conversation, *, body: str, user, subject: str | 
         msg["References"] = ref
     full = body.rstrip() + ("\n\n" + mb.signature if mb.signature else "")
     msg.set_content(full)
-    r = transport.send(mb, msg)  # 仍受“只允许本地测试服务器”护栏约束
+    intent, om, acquired = intents.reserve(db, key, request_hash,
+        dict(mailbox_id=mb.id, contact_id=c.contact_id, to_email=to, message_id=mid, subject=subj[:256], body_text=full,
+             kind="reply", status="sending", sent_at=utcnow(), snapshot={"user_id": str(user.id), "conversation_id": str(c.id)}))
+    if not acquired:
+        raise AppError("INBOX_SEND_BLOCKED", details={"intent_id": str(intent.id), "state": intent.state})
+    mid = om.message_id
+    msg.replace_header("Message-ID", mid)
+    intents.lock_tenant(db)
+    db.refresh(intent)
+    if intent.state != "sending":
+        raise AppError("DELIVERY_OUTCOME_UNKNOWN", details={"intent_id": str(intent.id), "state": intent.state})
+    db.refresh(c, with_for_update={"of": Conversation})
+    db.refresh(mb, with_for_update={"of": Mailbox})
+    if (c.deleted_at or c.peer_email != to or c.status == "spam" or reply_gate(db, c, to)["decision"] == "deny"
+            or mb.deleted_at or mb.auth_status != "ok" or mb.status in ("unbound", "disabled", "auth_failed")):
+        intents.finish(db, intent, om, "cancelled", kind="gate_changed")
+        raise AppError("INBOX_SEND_BLOCKED", message="发送前条件已变更，请重新核查")
+    try:
+        r = transport.send(mb, msg)  # 仍受“只允许本地测试服务器”护栏约束
+    except AppError as exc:  # The transport guard failed before connecting.
+        intents.finish(db, intent, om, "retryable", kind=exc.code)
+        raise
     now = utcnow()
     m = Message(conversation_id=c.id, direction="out", from_email=mb.address, to_email=to, subject=subj[:512], body=full,
                 header_message_id=mid, in_reply_to=ref, sent_by="user", user_id=user.id,
-                status="sent" if r.ok else "failed", detail=None if r.ok else {"smtp": r.code, "kind": r.kind, "detail": r.detail}, created_at=now)  # noqa: E501
+                status="sent" if r.ok else ("unknown" if r.kind == "unknown" else "failed"),
+                detail=None if r.ok else {"smtp": r.code, "kind": r.kind, "detail": r.detail}, created_at=now)
     db.add(m)
     if r.ok:
-        db.add(OutboundMessage(mailbox_id=mb.id, contact_id=c.contact_id, to_email=to, message_id=mid, subject=subj[:256], body_text=full,
-                               kind="reply", status="sent", sent_at=now, snapshot={"user_id": str(user.id), "conversation_id": str(c.id)}))
         health.today_metric(db, mb).sent_reply += 1
         c.status, c.last_message_at, c.mode = "replied", now, "human"
         from app.crm.inquiry import on_first_response
@@ -318,6 +357,13 @@ def send_reply(db: Session, c: Conversation, *, body: str, user, subject: str | 
             if a:
                 a.last_valid_followup_at = now
     db.flush()
+    intent.result_message_id = m.id
+    state = "sent" if r.ok else ("unknown" if r.kind == "unknown" else "retryable")
+    if r.kind in ("rejected", "hard_bounce"):
+        state = "cancelled"
+    intents.finish(db, intent, om, state, kind=r.kind, code=r.code)
     if not r.ok:
+        if r.kind == "unknown":
+            raise AppError("DELIVERY_OUTCOME_UNKNOWN", details={"intent_id": str(intent.id)})
         raise AppError("INBOX_SEND_BLOCKED", details={"smtp": r.code, "kind": r.kind, "detail": r.detail})
     return m

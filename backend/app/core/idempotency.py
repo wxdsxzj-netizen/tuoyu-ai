@@ -6,11 +6,12 @@ Completed claims expire after 24h; retention must never remove unknown claims.
 """
 import hashlib
 import inspect
+import uuid
 from datetime import timedelta
 from functools import wraps
 
 from fastapi.routing import APIRoute, iter_route_contexts, request_response
-from sqlalchemy import delete, select, update
+from sqlalchemy import case, delete, select, update
 from sqlalchemy.dialects.postgresql import insert
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -18,7 +19,7 @@ from starlette.responses import JSONResponse, Response
 
 from app.core.db import SessionLocal, utcnow
 from app.core.errors import AppError, error_body
-from app.models import IdempotencyKey
+from app.models import IdempotencyKey, Tenant
 
 # These create endpoints have dependency-based authorization and return no
 # secrets. Object-scoped routes need current object authorization inside their
@@ -44,11 +45,15 @@ def claim(request):
                                  getattr(request.state, "idempotency_authorization", "").encode()).hexdigest()
     cutoff = utcnow() - timedelta(hours=24)
     with SessionLocal.begin() as db:
+        # Identity was set by verified auth, never by a request header. The
+        # tenant lock orders new claims against DSR response invalidation.
+        tenant_id = uuid.UUID(identity.split(":")[1])
+        db.scalar(select(Tenant.id).where(Tenant.id == tenant_id).with_for_update())
         # Atomic expiration + unique insertion also serialize simultaneous reuse
         # of an expired key. Pending/unknown work is deliberately not expired.
         db.execute(delete(IdempotencyKey).where(IdempotencyKey.scope == scope, IdempotencyKey.key == key,
                                                IdempotencyKey.created_at < cutoff, IdempotencyKey.status_code != 0))
-        claimed = db.scalar(insert(IdempotencyKey).values(scope=scope, key=key, fingerprint=fingerprint,
+        claimed = db.scalar(insert(IdempotencyKey).values(tenant_id=tenant_id, scope=scope, key=key, fingerprint=fingerprint,
                                                         status_code=0, body="").on_conflict_do_nothing(
                                                             constraint="uq_idem_scope_key").returning(IdempotencyKey.id))
         if claimed:
@@ -66,7 +71,8 @@ def claim(request):
 def complete(claim_id, status, body):
     with SessionLocal.begin() as db:
         db.execute(update(IdempotencyKey).where(IdempotencyKey.id == claim_id, IdempotencyKey.status_code == 0)
-                   .values(status_code=status, body=body))
+                   .values(status_code=case((IdempotencyKey.discard_response, 409), else_=status),
+                           body=case((IdempotencyKey.discard_response, ""), else_=body)))
 
 
 class IdempotencyMiddleware(BaseHTTPMiddleware):

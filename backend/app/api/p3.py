@@ -1,6 +1,6 @@
 """P3：DSR 工作台 + 发件箱/域名 + 序列/审批/投递日志 API。"""
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -25,11 +25,12 @@ from app.models import (
     MessageDraft,
     OutboundMessage,
     SendingDomain,
+    SendIntent,
     Sequence,
     SequenceStep,
     Tenant,
 )
-from app.outreach import dns_check, engine, health, inbound, transport
+from app.outreach import dns_check, engine, health, inbound, intents, transport
 from app.outreach.crypto import encrypt
 
 router = APIRouter(prefix="/api/v1")
@@ -128,7 +129,9 @@ class DsrActionIn(BaseModel):
 @router.post("/dsr/{rid}:{action}", tags=["dsr"])
 def dsr_action(rid: uuid.UUID, action: str, body: DsrActionIn, request: Request, cu: CurrentUser = Depends(require("dsr.manage")),
                db: Session = Depends(get_db)):
-    r = _get(db, DsrRequest, rid)
+    r = db.scalar(select(DsrRequest).where(DsrRequest.id == rid, DsrRequest.deleted_at.is_(None)).with_for_update())
+    if not r:
+        raise AppError("COMMON_NOT_FOUND")
     extra = {}
     if action == "start-verification":
         extra["verification_code"] = dsr_mod.start_verification(db, r, cu.id)
@@ -813,17 +816,20 @@ def list_enrollments(sid: uuid.UUID, page: int = Query(1, ge=1), size: int = Que
 @router.post("/enrollments/{eid}:{action}", tags=["sequences"])
 def enrollment_action(eid: uuid.UUID, action: str, request: Request, cu: CurrentUser = Depends(require("sequence.manage")),
                       db: Session = Depends(get_db)):
-    e = _get(db, Enrollment, eid)
+    e = db.scalar(select(Enrollment).where(Enrollment.id == eid, Enrollment.deleted_at.is_(None)).with_for_update())
+    if not e:
+        raise AppError("COMMON_NOT_FOUND")
     if action == "remove":
         e.status, e.ended_reason, e.next_run_at = "removed", "manual", None
     elif action == "pause" and e.status in ("scheduled", "active"):
-        e.status, e.paused_reason = "paused", "manual"
+        e.status, e.paused_reason, e.next_run_at = "paused", "manual", None
     elif action == "resume" and e.status == "paused":
         e.status, e.paused_reason, e.next_run_at = "active" if e.current_step > 1 else "scheduled", None, utcnow()
     elif action == "approve" and e.status == "pending_approval":  # 地区规则“需审批”的注册
         if "sequence.approve" not in cu.permissions:
             raise AppError("COMMON_FORBIDDEN")
-        e.status = "scheduled"
+        engine.approve_compliance(db, e, cu.user)
+        e.status, e.next_run_at = "scheduled", utcnow()
     else:
         raise AppError("COMMON_INVALID_STATE")
     event_ = {"remove": "removed", "pause": "paused", "resume": "resumed", "approve": "approved"}[action]
@@ -1024,3 +1030,31 @@ def run_now(cu: CurrentUser = Depends(require("sequence.approve")), db: Session 
     r = engine.run_due(db)
     db.commit()
     return r
+
+
+@router.get("/delivery/intents", tags=["delivery"])
+def delivery_intents(page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200),
+                     cu: CurrentUser = Depends(require("sequence.approve")), db: Session = Depends(get_db)):
+    return page_of(db, select(SendIntent).where(SendIntent.state.in_((*intents.RESERVED, "exhausted")))
+        .order_by(SendIntent.created_at), page, size,
+        lambda r: {"id": str(r.id), "state": r.state, "outbound_id": str(r.outbound_id), "attempts": r.attempts,
+                   "updated_at": r.updated_at, "message_id": db.get(OutboundMessage, r.outbound_id).message_id,
+                   "can_reconcile": r.state != "sending" or r.updated_at <= utcnow() - timedelta(minutes=2)})
+
+
+class ReconcileSend(BaseModel):
+    outcome: str = Field(pattern="^(sent|not_sent)$")
+    evidence: str = Field(min_length=10, max_length=2000)
+
+
+@router.post("/delivery/intents/{iid}:reconcile", tags=["delivery"])
+def reconcile_send(iid: uuid.UUID, body: ReconcileSend, request: Request,
+                   cu: CurrentUser = Depends(require("sequence.approve")), db: Session = Depends(get_db)):
+    intents.lock_tenant(db)
+    intent = db.scalar(select(SendIntent).where(SendIntent.id == iid).with_for_update())
+    if not intent:
+        raise AppError("COMMON_NOT_FOUND")
+    intents.reconcile(db, intent, body.outcome)
+    audit(db, cu, request, "delivery.reconcile", "send_intent", intent.id, outcome=body.outcome, evidence=body.evidence)
+    db.commit()
+    return {"id": str(intent.id), "state": intent.state, "outcome": body.outcome}

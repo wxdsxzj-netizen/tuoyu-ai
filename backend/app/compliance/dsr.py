@@ -171,24 +171,23 @@ def execute(db: Session, r: DsrRequest, actor=None) -> dict:
         for c in contacts:
             _stop_enrollments(db, c.id, "dsr")
         if r.type == "delete":
-            for c in contacts:  # 擦除个人信息（保留无个人信息的空壳以维持外键与统计）
-                c.full_name, c.email, c.email_normalized, c.phone, c.linkedin_url, c.title = "[已删除]", None, None, None, None, None
-                c.deleted_at = utcnow()
-            for x in db.scalars(select(ConsentRecord).where(ConsentRecord.subject == email)):
-                x.subject, x.evidence_ref, x.deleted_at = key_hash("email", email), None, utcnow()
-            for m in db.scalars(select(OutboundMessage).where(OutboundMessage.to_email == email)):
-                m.to_email, m.body_text, m.snapshot = "[已删除]", "[已删除]", None
-            for m in db.scalars(select(InboundMessage).where(InboundMessage.from_email == email)):
-                m.from_email, m.body = "[已删除]", "[已删除]"
+            from app.compliance.erasure import erase_copies
+            result["erasure"] = erase_copies(db, r)
+            for x in db.scalars(select(ConsentRecord).where(func.lower(ConsentRecord.subject) == email)):
+                x.subject, x.evidence_ref, x.deleted_at, x.revoked_at = key_hash("email", email), None, utcnow(), utcnow()
             # 已有明文抑制改为只存哈希
             for s in db.scalars(select(Suppression).where(Suppression.key_hash.in_(r.subject_keys))):
-                s.value = None
+                s.value, s.note, s.revoke_reason = None, None, None
+                s.source_ref = f"dsr:{r.id}"
         else:
             for c in contacts:
                 c.lead_status = "suppressed"
         add_suppression(db, key_type="email", value=email, reason="dsr", source_ref=f"dsr:{r.id}", actor_id=actor, hash_only=True)
         add_global(db, key_type="email", value=email, reason="object" if r.type == "object" else "dsr_delete")
-        result["affected_contacts"] = len(contacts)
+        result["affected_contacts"] = result.get("erasure", {}).get("counts", {}).get("contacts", len(contacts))
+        if r.type == "delete":
+            from app.compliance.erasure import remaining_payloads
+            result["erasure"]["manual_review"].update(remaining_payloads(db, r))
     r.result = {k: v for k, v in result.items() if k != "export"} | ({"exported": True} if "export" in result else {})
     _event(r, "executed", actor, **{k: v for k, v in r.result.items() if k != "type"})
     return result
@@ -198,10 +197,19 @@ def complete(db: Session, r: DsrRequest, actor=None, note=None):
     _require(r, ("processing",))
     if not r.result:
         raise AppError("COMMON_INVALID_STATE", details={"reason": "请先执行请求"})
+    if r.type == "delete":
+        # Recheck the graph at completion, including copies created between the
+        # execution and completion requests. Never accept legacy partial results.
+        result = execute(db, r, actor)
+        pending = result["erasure"]["manual_review"]
+        if pending:
+            raise AppError("COMMON_INVALID_STATE", message="仍有保留数据需要人工核查，不能宣称删除完成", details=pending)
     r.status, r.completed_at = "completed", utcnow()
     if r.type == "delete":
-        r.subject_email = None
-        r.requester_contact = None if r.requester_contact and "@" in r.requester_contact else r.requester_contact
+        r.subject_email, r.requester_contact, r.requester_name, r.details, r.rectify_changes = None, None, None, None, None
+        r.reject_reason = None
+        r.timeline = [{k: v for k, v in event.items() if k not in ("note", "reason")} for event in r.timeline or []]
+        note = None
     _release_restriction(db, r)
     _event(r, "completed", actor, note=note)
 

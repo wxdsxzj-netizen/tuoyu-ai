@@ -1,4 +1,6 @@
 """序列执行引擎：注册（G1）→ 生成草稿（AI + G2）→ 审批 → 发送前闸门（P2 合规检查 + 窗口 + 频率 + 额度 + 熔断）→ SMTP → 下一步。"""
+import hashlib
+import json
 import logging
 import random
 import uuid
@@ -7,7 +9,7 @@ from email import policy
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.compliance.gate import check_contact
@@ -18,6 +20,7 @@ from app.core.config import get_settings
 from app.core.db import utcnow
 from app.core.errors import AppError
 from app.models import (
+    Account,
     Contact,
     DeliveryEvent,
     Enrollment,
@@ -29,7 +32,7 @@ from app.models import (
     SequenceStep,
     User,
 )
-from app.outreach import health, schedule, transport, writer
+from app.outreach import health, intents, schedule, transport, writer
 
 log = logging.getLogger("engine")
 LIVE = ("pending_approval", "scheduled", "active", "paused")
@@ -45,6 +48,42 @@ def steps_of(db, seq_id) -> list[SequenceStep]:
 
 def country_of(c: Contact) -> str | None:
     return resolve_country(c.country, c.company.country if c.company else None, c.email)[0]
+
+
+def compliance_fingerprint(contact, gate):
+    evidence = {"contact_id": str(contact.id), "email": (contact.email or "").strip().lower(),
+                "subscriber_type": contact.subscriber_type, "region": gate["region"], "needs": gate["needs"], "channel": "email"}
+    return hashlib.sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def approve_compliance(db, e, user):
+    contact = db.get(Contact, e.contact_id)
+    if not contact or contact.deleted_at:
+        raise AppError("COMMON_INVALID_STATE", message="联系人已删除，不能审批放行")
+    gate = check_contact(db, contact, reverify=True)
+    if gate["decision"] == "deny":
+        raise AppError("COMMON_INVALID_STATE", message="当前合规条件禁止发送，不能审批放行", details={"blocks": gate["blocks"]})
+    e.last_gate = {**(e.last_gate or {}), "compliance_approval": {
+        "fingerprint": compliance_fingerprint(contact, gate), "reviewed_by": str(user.id), "at": utcnow().isoformat()}}
+
+
+def compliance_approved(db, e, contact, gate):
+    proof = (e.last_gate or {}).get("compliance_approval", {})
+    if proof.get("fingerprint") != compliance_fingerprint(contact, gate):
+        return False
+    try:
+        user = db.get(User, uuid.UUID(proof.get("reviewed_by", "")))
+    except (ValueError, TypeError):
+        return False
+    return bool(user and user.is_active and not user.deleted_at and "sequence.approve" in user.role.permission_codes)
+
+
+def won_customer(db, contact):
+    links = [Account.id == contact.account_id] if contact.account_id else []
+    if contact.company_id:
+        links.append(Account.company_id == contact.company_id)
+    return bool(links and db.scalar(select(Account.id).where(or_(*links), Account.stage == "customer",
+                                                           Account.deleted_at.is_(None)).limit(1)))
 
 
 # ---------------- 注册 ----------------
@@ -139,13 +178,19 @@ def _budget_pause(db, seq, e, code, now):
 # ---------------- 发件箱选择 ----------------
 def hourly_sent(db, mb, now) -> int:
     return db.scalar(select(func.count()).select_from(OutboundMessage).where(OutboundMessage.mailbox_id == mb.id,
+                                                                            OutboundMessage.status.in_(intents.COUNTED),
                                                                             OutboundMessage.sent_at >= now - timedelta(hours=1)))
 
 
 def pick_mailbox(db: Session, seq: Sequence, e: Enrollment, contact: Contact, now: datetime) -> tuple[Mailbox | None, str]:
+    intent = intents.slot(db, f"sequence:{e.id}:{e.current_step}")
+    excluded = set(intent.failed_mailboxes or []) if intent else set()
     ids = ([e.mailbox_id] if e.mailbox_id and e.mailbox_id in seq.mailbox_ids else []) + [i for i in seq.mailbox_ids if i != e.mailbox_id]
     reason = "SEQ_NO_MAILBOX"
     for mid in ids:
+        if str(mid) in excluded:
+            reason = "DELIVERY_RETRIES_EXHAUSTED"
+            continue
         mb = db.get(Mailbox, mid)
         if not mb or mb.deleted_at:
             continue
@@ -169,8 +214,30 @@ def pick_mailbox(db: Session, seq: Sequence, e: Enrollment, contact: Contact, no
         if hourly_sent(db, mb, now) >= mb.hourly_limit or (mb.next_send_after and mb.next_send_after > now):
             reason = "DELIVERY_QUOTA_EXHAUSTED"
             continue
+        risk = catch_all_limit(db, mb, contact, now)
+        if risk:
+            reason = risk
+            continue
         return mb, ""
     return None, reason
+
+
+def catch_all_limit(db, mb, contact, now):
+    if contact.email_status != "catch_all":
+        return None
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    base = (OutboundMessage.kind == "cold", OutboundMessage.status.in_(intents.COUNTED), OutboundMessage.sent_at >= start)
+    domain = (contact.email or "").rsplit("@", 1)[-1].lower()
+    if db.scalar(select(OutboundMessage.id).where(*base,
+        func.lower(func.split_part(OutboundMessage.to_email, "@", 2)) == domain).limit(1)):
+        return "DELIVERY_CATCH_ALL_DOMAIN"
+    total = db.scalar(select(func.count()).select_from(OutboundMessage).where(*base, OutboundMessage.mailbox_id == mb.id))
+    risky = db.scalar(select(func.count()).select_from(OutboundMessage).outerjoin(Contact, Contact.id == OutboundMessage.contact_id)
+        .where(*base, OutboundMessage.mailbox_id == mb.id,
+               func.coalesce(OutboundMessage.snapshot["email_status"].astext, Contact.email_status) == "catch_all"))
+    if (risky + 1) * 10 > total + 1:
+        return "DELIVERY_CATCH_ALL_QUOTA"
+    return None
 
 
 def company_sent_today(db, company_id, now) -> int:
@@ -178,7 +245,8 @@ def company_sent_today(db, company_id, now) -> int:
         return 0
     start = now - timedelta(hours=24)
     return db.scalar(select(func.count()).select_from(OutboundMessage).join(Contact, Contact.id == OutboundMessage.contact_id)
-                     .where(Contact.company_id == company_id, OutboundMessage.sent_at >= start))
+                     .where(Contact.company_id == company_id, OutboundMessage.sent_at >= start,
+                            OutboundMessage.status.in_(intents.COUNTED)))
 
 
 # ---------------- 执行 ----------------
@@ -188,6 +256,12 @@ def _defer(db, e, until: datetime, reason: str, **kw):
 
 
 def process_enrollment(db: Session, e: Enrollment, now: datetime, rng: random.Random) -> str:
+    db.flush()
+    intents.lock_tenant(db)
+    db.expire_all()
+    db.refresh(e, with_for_update=True)
+    if e.status not in ("scheduled", "active"):
+        return "enrollment_inactive"
     seq = db.get(Sequence, e.sequence_id)
     if not seq or seq.status != "active":
         return "sequence_inactive"
@@ -200,10 +274,24 @@ def process_enrollment(db: Session, e: Enrollment, now: datetime, rng: random.Ra
     if seq.deadline and seq.deadline < date.today() and e.current_step == 1:
         e.status, e.ended_reason = "removed", "deadline"
         return "deadline"
-    if seq.send_limit is not None and seq.sent_count >= seq.send_limit:
+    reserved = db.scalar(select(func.count()).select_from(OutboundMessage).join(Enrollment, Enrollment.id == OutboundMessage.enrollment_id)
+                         .where(Enrollment.sequence_id == seq.id, OutboundMessage.status.in_(intents.RESERVED)))
+    if seq.send_limit is not None and seq.sent_count + reserved >= seq.send_limit:
         seq.status, seq.paused_reason = "paused", "budget"
         return "budget"
     contact = db.get(Contact, e.contact_id)
+    if not contact or contact.deleted_at:
+        e.status, e.ended_reason, e.next_run_at = "removed", "contact_deleted", None
+        return "contact_deleted"
+    if won_customer(db, contact):
+        e.status, e.ended_reason, e.next_run_at = "removed", "opportunity_won", None
+        return "opportunity_won"
+    prior = intents.slot(db, f"sequence:{e.id}:{step.step_no}")
+    if prior and prior.state != "retryable":
+        if prior.state == "unknown":
+            e.status, e.paused_reason, e.next_run_at = "paused", "delivery_unknown", None
+            event(db, e, "deferred", "DELIVERY_OUTCOME_UNKNOWN", intent_id=str(prior.id))
+        return "delivery_" + prior.state
     from app.b3 import outreach as b3
     if not b3.condition_ok(step.condition, contact, contact.company):  # B3 条件分支：不满足则跳过该步
         nxt = next((x for x in steps if x.step_no > step.step_no), None)
@@ -266,7 +354,8 @@ def process_enrollment(db: Session, e: Enrollment, now: datetime, rng: random.Ra
         return "awaiting_approval"
     # 发送前最后一刻闸门（BR-5-04）
     gate = check_contact(db, contact, reverify=True)
-    e.last_gate = {"decision": gate["decision"], "blocks": gate["blocks"], "at": now.isoformat()}
+    e.last_gate = {**(e.last_gate or {}), "decision": gate["decision"], "blocks": gate["blocks"],
+                   "needs": gate["needs"], "at": now.isoformat()}
     if gate["decision"] == "deny":
         codes = {b["code"] for b in gate["blocks"]}
         event(db, e, "gate_blocked", ",".join(sorted(codes)))
@@ -276,6 +365,10 @@ def process_enrollment(db: Session, e: Enrollment, now: datetime, rng: random.Ra
         else:
             e.status, e.paused_reason, e.next_run_at = "paused", "gate", None
         return "gate_blocked"
+    if gate["decision"] == "approval" and not compliance_approved(db, e, contact, gate):
+        e.status, e.next_run_at = "pending_approval", None
+        event(db, e, "gate_blocked", "COMPLIANCE_APPROVAL_REQUIRED")
+        return "awaiting_compliance_approval"
     country = country_of(contact)
     if not schedule.in_window(now, country, seq.window_start, seq.window_end):
         _defer(db, e, schedule.next_window(now, country, seq.window_start, seq.window_end, rng), "DELIVERY_OUTSIDE_WINDOW")
@@ -285,6 +378,10 @@ def process_enrollment(db: Session, e: Enrollment, now: datetime, rng: random.Ra
         return "frequency"
     mb, why = pick_mailbox(db, seq, e, contact, now)
     if not mb:
+        if why == "DELIVERY_RETRIES_EXHAUSTED":
+            e.status, e.paused_reason, e.next_run_at = "paused", "delivery_retries_exhausted", None
+            event(db, e, "deferred", why)
+            return why
         _defer(db, e, now + timedelta(minutes=30), why)
         return why
     return _send(db, e, seq, step, draft, contact, mb, now, rng, steps)
@@ -311,27 +408,58 @@ def _send(db, e, seq, step, draft, contact, mb, now, rng, steps) -> str:
         return "footer_missing"
     body = draft.body.rstrip() + ("\n\n" + mb.signature if mb.signature else "") + "\n\n--\n" + footer["text"]
     msg.set_content(body)
+    # Historical successful drafts also occupy the business slot; no destructive
+    # migration/deduplication of legacy mail is required.
+    if db.scalar(select(OutboundMessage.id).where(OutboundMessage.draft_id == draft.id,
+                                                OutboundMessage.status.in_(intents.COUNTED)).limit(1)):
+        return "delivery_already_recorded"
+    old_next = e.next_run_at
+    e.next_run_at = None
+    mb.next_send_after = now + timedelta(seconds=rng.randint(s.send_interval_min_s, s.send_interval_max_s))
+    intent, om, acquired = intents.reserve(db, f"sequence:{e.id}:{step.step_no}",
+        intents.fingerprint(str(contact.id), contact.email, draft.subject, draft.body, draft.step_version),
+        dict(enrollment_id=e.id, draft_id=draft.id, mailbox_id=mb.id, contact_id=contact.id, to_email=contact.email,
+             message_id=mid, subject=draft.subject, body_text=body, kind="cold", status="sending", sent_at=now,
+             snapshot={"facts_used": draft.facts_used, "qa_score": draft.qa_score, "model": draft.model,
+                       "approved_by": str(draft.reviewed_by) if draft.reviewed_by else seq.autonomy,
+                       "step_version": draft.step_version, "gate": e.last_gate, "email_status": contact.email_status}))
+    if not acquired:
+        return "delivery_" + intent.state
+    msg.replace_header("Message-ID", om.message_id)
+    mid = om.message_id
+    intents.lock_tenant(db)
+    db.refresh(intent)
+    if intent.state != "sending":
+        return "delivery_" + intent.state
+    for row in (e, seq, draft, contact, mb):
+        db.refresh(row, with_for_update={"of": type(row)})
+    current_gate = check_contact(db, contact, reverify=True)
+    if (e.status not in ("scheduled", "active") or e.current_step != step.step_no or seq.status != "active"
+            or contact.deleted_at or won_customer(db, contact) or draft.status != "approved"
+            or intent.request_hash != intents.fingerprint(str(contact.id), contact.email, draft.subject, draft.body, draft.step_version)
+            or current_gate["decision"] == "deny"
+            or (current_gate["decision"] == "approval" and not compliance_approved(db, e, contact, current_gate))):
+        if e.status in ("scheduled", "active"):
+            e.status, e.paused_reason, e.next_run_at = "paused", "gate", None
+        intents.finish(db, intent, om, "cancelled", kind="gate_changed")
+        return "gate_changed"
+    e.next_run_at = old_next
     try:
         r = transport.send(mb, msg)
     except AppError as ex:
         event(db, e, "deferred", ex.code)
         e.next_run_at = now + timedelta(hours=1)
+        intents.finish(db, intent, om, "retryable", kind=ex.code)
         return ex.code
     m = health.today_metric(db, mb)
     if r.ok:
-        om = OutboundMessage(enrollment_id=e.id, draft_id=draft.id, mailbox_id=mb.id, contact_id=contact.id, to_email=contact.email,
-                             message_id=mid, subject=draft.subject, body_text=body, kind="cold", status="sent", sent_at=now,
-                             snapshot={"facts_used": draft.facts_used, "qa_score": draft.qa_score, "model": draft.model,
-                                       "approved_by": str(draft.reviewed_by) if draft.reviewed_by else seq.autonomy,
-                                       "step_version": draft.step_version, "gate": e.last_gate})
-        db.add(om)
+        om.status = "sent"
         db.flush()
         from app.inbox.service import record_outbound
         record_outbound(db, om=om, owner_id=seq.owner_id, sent_by="sequence")
         event(db, e, "sent", None, message_id=om.id, mailbox=mb.address)
         m.sent_cold += 1
         mb.last_sent_at = now
-        mb.next_send_after = now + timedelta(seconds=rng.randint(s.send_interval_min_s, s.send_interval_max_s))
         draft.status = "sent"
         seq.sent_count += 1
         e.mailbox_id = mb.id
@@ -346,7 +474,20 @@ def _send(db, e, seq, step, draft, contact, mb, now, rng, steps) -> str:
             e.current_step, e.next_run_at = step.step_no + 1, now + timedelta(days=3)  # 最后一步后观察 3 天再完成
             if step.purpose == "breakup":
                 contact.do_not_contact_until = now + timedelta(days=90)  # BR-7-06
+        intent.soft_attempts = 0
+        e.last_gate = {**(e.last_gate or {}), "soft_tries": 0}
+        intents.finish(db, intent, om, "sent")
         return "sent"
+    if r.kind == "unknown":
+        e.status, e.paused_reason, e.next_run_at = "paused", "delivery_unknown", None
+        event(db, e, "deferred", "DELIVERY_OUTCOME_UNKNOWN", intent_id=str(intent.id))
+        intents.finish(db, intent, om, "unknown", kind=r.kind, code=r.code)
+        return "delivery_unknown"
+    if r.kind == "rejected":
+        e.status, e.paused_reason, e.next_run_at = "paused", "smtp_rejected", None
+        event(db, e, "deferred", "DELIVERY_REJECTED", intent_id=str(intent.id), smtp_code=r.code)
+        intents.finish(db, intent, om, "cancelled", kind=r.kind, code=r.code)
+        return "delivery_rejected"
     if r.kind == "hard_bounce":
         record_hard_bounce(db, email=contact.email, source_ref=f"smtp:{r.code}")
         contact.email_status, contact.email_reason_codes = "invalid", ["HARD_BOUNCE"]
@@ -356,19 +497,28 @@ def _send(db, e, seq, step, draft, contact, mb, now, rng, steps) -> str:
         draft.status = "blocked"
         event(db, e, "hard_bounce", str(r.code), detail_text=r.detail)
         health.evaluate(db, mb)
+        intents.finish(db, intent, om, "hard_bounce", kind=r.kind, code=r.code)
         return "hard_bounce"
     if r.kind == "auth":
         mb.auth_status, mb.status = "expired", "auth_failed"
         event(db, e, "deferred", "DELIVERY_AUTH_FAILED")
         e.next_run_at = now + timedelta(minutes=30)
+        intents.finish(db, intent, om, "retryable", kind=r.kind, code=r.code)
         return "auth_failed"
-    tries = int((e.last_gate or {}).get("soft_tries", 0)) + 1
+    tries = intent.soft_attempts + 1
+    intent.soft_attempts = tries
     e.last_gate = {**(e.last_gate or {}), "soft_tries": tries}
     event(db, e, "soft_bounce", str(r.code or r.kind), detail_text=r.detail, attempt=tries)
-    e.next_run_at = now + timedelta(minutes=5 * 2 ** tries)  # 指数退避
-    if tries >= 3:
-        e.mailbox_id = None  # 3 次失败后换同序列其他发件箱
-        e.last_gate["soft_tries"] = 0
+    e.next_run_at = now + timedelta(minutes=min(5 * 2 ** min(tries, 8), 240))
+    e.mailbox_id = mb.id
+    if tries % 3 == 0:
+        intent.failed_mailboxes = [*(intent.failed_mailboxes or []), str(mb.id)]
+        e.mailbox_id = None
+        if set(map(str, seq.mailbox_ids)) <= set(intent.failed_mailboxes):
+            e.status, e.paused_reason, e.next_run_at = "paused", "delivery_retries_exhausted", None
+            event(db, e, "deferred", "DELIVERY_RETRIES_EXHAUSTED", intent_id=str(intent.id))
+    state = "exhausted" if e.paused_reason == "delivery_retries_exhausted" else "retryable"
+    intents.finish(db, intent, om, state, kind=r.kind, code=r.code)
     return "soft_fail"
 
 
@@ -399,13 +549,19 @@ def run_due(db: Session, now: datetime | None = None, rng: random.Random | None 
     now = now or utcnow()
     rng = rng or random.Random()
     pre = pregenerate(db, now)
+    db.commit()
     due = db.scalars(select(Enrollment).where(Enrollment.status.in_(("scheduled", "active")), Enrollment.next_run_at <= now,
                                               Enrollment.deleted_at.is_(None)).order_by(Enrollment.next_run_at).limit(limit)).all()
     out: dict = {}
     for e in due:
-        r = process_enrollment(db, e, now, rng)
+        try:
+            r = process_enrollment(db, e, now, rng)
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("Enrollment dispatch failed; durable send receipts are retained")
+            r = "failed"
         out[r] = out.get(r, 0) + 1
-        db.flush()
     if pre:
         out["pregenerated"] = pre
     return out

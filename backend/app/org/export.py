@@ -52,6 +52,11 @@ def _val(v):
 
 
 def build(db: Session, ex: DataExport) -> DataExport:
+    from app.compliance.erasure import lock_tenant
+    lock_tenant(db)
+    db.refresh(ex)
+    if ex.status != "pending":
+        return ex
     ex.status = "running"
     db.flush()
     root = os.path.join(get_settings().upload_dir, "exports")

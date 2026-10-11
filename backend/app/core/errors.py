@@ -97,6 +97,8 @@ ERROR_CODES: dict[str, tuple[int, str, str, bool]] = {
     "HANDOFF_REJECT_REASON_REQUIRED": (400, "请选择拒绝原因", "Reject reason required", False),
     "COMMON_ALREADY_TAKEN": (409, "已被他人领取", "Already taken by someone else", False),
     "INBOX_SEND_BLOCKED": (409, "发送前检查未通过，未发送", "Pre-send check failed; not sent", False),
+    "DELIVERY_OUTCOME_UNKNOWN": (409, "发送结果未知，请核查邮件服务记录，勿重复发送",
+                                 "Delivery outcome unknown; reconcile before retrying", False),
     "SEQ_AUTONOMY_NOT_ALLOWED": (403, "本企业未开启 L2 自动通过", "L2 auto-approve is disabled for this tenant", False),
     "CRM_BANK_INFO_MISSING": (422, "尚未设置收款银行信息", "Bank info missing", False),
     "CRM_CLAIM_COOLDOWN": (409, "该客户被释放后处于领取冷却期", "Claim cooldown", False),

@@ -16,6 +16,7 @@ from app.llm.gateway import LLMError, get_gateway
 from app.models import Contact, Enrollment, InboundMessage, Mailbox, OutboundMessage
 from app.outreach import health
 from app.outreach.engine import LIVE, event
+from app.outreach.reply_text import authored_subject, authored_text, body_parts, delivery_status, mime_authored_text, original_message_ids
 
 CATEGORIES = ("positive", "inquiry", "sample", "meeting", "referral", "later", "not_interested", "unsubscribe", "auto_reply",
               "bounce", "other")
@@ -33,10 +34,13 @@ REFERRAL = re.compile(r"\b(contact my colleague|right person is|reach out to|for
 LATER = re.compile(r"\b(next (month|quarter|year)|later this year|not now|maybe later|after (the )?(holiday|fair))\b", re.I)
 POSITIVE = re.compile(r"\b(interested|sounds good|tell me more|send (me )?(more|details|info))\b", re.I)
 UNTIL = re.compile(r"(?:until|till|back on|return(?:ing)? on|through|bis|jusqu'au)\s+([A-Za-z0-9,./ \-]{3,30})", re.I)
+# RFC 3463 distinguishes destination failures from message/policy failures.
+# Only a definite unusable destination justifies address-wide suppression.
+PERMANENT_DESTINATION = {"5.1.1", "5.1.2", "5.1.3", "5.1.6", "5.2.1"}
 
 
 def classify_rules(subject: str, body: str, from_addr: str) -> tuple[str, float]:
-    text = f"{subject or ''}\n{body or ''}"
+    text = f"{authored_subject(subject)}\n{authored_text(body)}"
     if from_addr.lower().startswith(("mailer-daemon", "postmaster")) or BOUNCE_SUBJ.search(subject or ""):
         return "bounce", 0.95
     if UNSUB.search(text):
@@ -81,10 +85,11 @@ def classify_llm(subject: str, body: str) -> tuple[str, float] | None:
 
 
 def classify(subject: str, body: str, from_addr: str) -> tuple[str, float, str]:
+    body = authored_text(body)
     rule_cat, rule_conf = classify_rules(subject, body, from_addr)
     if rule_cat in ("unsubscribe", "bounce"):  # 关键词规则兜底，优先级最高
         return rule_cat, rule_conf, "rule"
-    got = classify_llm(subject, body)
+    got = classify_llm(authored_subject(subject), body)
     if got:
         return got[0], got[1], "model"
     return rule_cat, rule_conf, "rule"
@@ -122,17 +127,16 @@ def _same_company(db, e: Enrollment, action: str, reason: str):
 
 def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_reply_to: str | None = None,
                    references: str | None = None, mailbox: Mailbox | None = None, now: datetime | None = None,
-                   header_message_id: str | None = None) -> dict:
+                   header_message_id: str | None = None, authored_body: str | None = None, dsn_status: list | None = None) -> dict:
     now = now or utcnow()
     sender = normalize_email(parseaddr(from_addr)[1] or from_addr) or from_addr.lower()
-    cat, conf, by = classify(subject, body, sender)
+    reply = authored_text(body) if authored_body is None else authored_body
+    cat, conf, by = classify(subject, reply, sender)
     ids = [x.strip() for x in f"{in_reply_to or ''} {references or ''}".split() if x.strip()]
-    om = db.scalar(select(OutboundMessage).where(OutboundMessage.message_id.in_(ids)).limit(1)) if ids else None
-    if cat == "bounce":
-        failed = re.search(r"[\w.+'-]+@[\w-]+\.[\w.-]+", re.sub(r"(?i)mailer-daemon@\S+|postmaster@\S+", "", body or ""))
-        target = om.to_email if om else (failed.group(0).lower() if failed else None)
-        om = om or (db.scalar(select(OutboundMessage).where(OutboundMessage.to_email == target)
-                              .order_by(OutboundMessage.sent_at.desc()).limit(1)) if target else None)
+    lookup = select(OutboundMessage).where(OutboundMessage.message_id.in_(ids))
+    if mailbox:
+        lookup = lookup.where(OutboundMessage.mailbox_id == mailbox.id)
+    om = db.scalar(lookup.limit(1)) if ids else None
     e = db.get(Enrollment, om.enrollment_id) if om and om.enrollment_id else None
     if not e and cat != "bounce":
         c = db.scalar(select(Contact).where(Contact.email_normalized == sender))
@@ -145,7 +149,16 @@ def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_r
     contact = db.get(Contact, e.contact_id) if e else None
     action = "logged"
     if cat == "bounce":
-        if om:
+        statuses = dsn_status if dsn_status is not None else delivery_status(body)
+        evidence = {(x["action"], x["status"]) for x in statuses
+                    if om and x["recipient"] == om.to_email.lower()}
+        if len(evidence) != 1:
+            inbound.needs_human, action = True, "needs_review"
+        elif next(iter(evidence))[0] == "failed" and next(iter(evidence))[1] in PERMANENT_DESTINATION:
+            if om.status == "hard_bounce":
+                db.flush()
+                return {"category": cat, "confidence": conf, "action": "already_recorded",
+                        "enrollment_id": str(e.id) if e else None}
             record_hard_bounce(db, email=om.to_email, source_ref="dsn")
             om.status = "hard_bounce"
             if mb:
@@ -157,6 +170,14 @@ def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_r
                 c2 = db.get(Contact, e.contact_id)
                 c2.email_status, c2.email_reason_codes = "invalid", ["HARD_BOUNCE"]
             action = "hard_bounce"
+        elif next(iter(evidence))[1].startswith("4."):
+            om.status = "soft_bounce"
+            event(db, e, "soft_bounce", "DSN_TEMPORARY", message_id=om.id)
+            action = "soft_bounce"
+        elif next(iter(evidence))[1].startswith("2."):
+            action = "delivery_notice"
+        else:
+            inbound.needs_human, action = True, "needs_review"
         db.flush()
         return {"category": cat, "confidence": conf, "action": action, "enrollment_id": str(e.id) if e else None}
     if mb and e:
@@ -171,12 +192,14 @@ def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_r
             contact.lead_status = "suppressed"
         action = "suppressed"
     elif cat == "auto_reply" and e:
-        back = parse_return_date(body or "", now)
-        e.next_run_at = (back + timedelta(days=1)) if back else now + timedelta(days=7)  # AC-7-01 / AC-7-24
-        if e.status == "paused":
-            e.status = "active"
-        event(db, e, "ooo", "RETURN_DATE" if back else "DEFAULT_7D", until=e.next_run_at.isoformat())
-        action = "postponed"
+        if e.status in ("active", "scheduled"):
+            back = parse_return_date(reply, now)
+            e.next_run_at = (back + timedelta(days=1)) if back else now + timedelta(days=7)
+            event(db, e, "ooo", "RETURN_DATE" if back else "DEFAULT_7D", until=e.next_run_at.isoformat())
+            action = "postponed"
+        else:
+            event(db, e, "ooo", "EXISTING_STOP_PRESERVED")
+            action = "pause_preserved"
     elif e:
         e.next_run_at = None
         if cat == "not_interested":
@@ -198,7 +221,7 @@ def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_r
         event(db, e, "reply", cat.upper(), confidence=conf)
         if cat == "referral":  # B3 M7-07：转介 → 自动建被推荐联系人（同域名）
             from app.b3.outreach import referral_contacts
-            made = referral_contacts(db, body or "", sender, e.company_id)
+            made = referral_contacts(db, reply, sender, e.company_id)
             if made:
                 action += f"；新建转介联系人 {len(made)}"
     db.flush()
@@ -228,11 +251,11 @@ def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_r
 
 def _text_of(msg) -> str:
     if msg.is_multipart():
-        for part in msg.walk():
+        for part in body_parts(msg):
             if part.get_content_type() == "text/plain" and not part.get_filename():
                 return part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", errors="replace")
-        for part in msg.walk():
-            if part.get_content_type() == "message/delivery-status" or part.get_content_type() == "text/html":
+        for part in body_parts(msg):
+            if part.get_content_type() == "text/html":
                 p = part.get_payload(decode=True)
                 if p:
                     return re.sub(r"<[^>]+>", " ", p.decode(errors="replace"))
@@ -255,9 +278,12 @@ def poll_mailbox(db: Session, mb: Mailbox, conn=None) -> int:
             raw = next((x[1] for x in msgdata if isinstance(x, tuple)), None)
             if raw:
                 msg = email.message_from_bytes(raw)
-                handle_inbound(db, from_addr=msg.get("From", ""), subject=str(msg.get("Subject", "")), body=_text_of(msg),
+                body = _text_of(msg)
+                refs = " ".join([msg.get("References", ""), *original_message_ids(msg)])
+                handle_inbound(db, from_addr=msg.get("From", ""), subject=str(msg.get("Subject", "")), body=body,
                                header_message_id=msg.get("Message-ID"),
-                               in_reply_to=msg.get("In-Reply-To"), references=msg.get("References"), mailbox=mb)
+                               in_reply_to=msg.get("In-Reply-To"), references=refs, mailbox=mb,
+                               authored_body=mime_authored_text(msg, body), dsn_status=delivery_status(body, msg))
                 n += 1
             mb.imap_last_uid = uid
         return n

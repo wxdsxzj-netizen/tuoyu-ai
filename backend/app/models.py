@@ -651,6 +651,21 @@ class OutboundMessage(TenantScoped, Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SendIntent(TenantOwned, TimestampMixin, Base):
+    """Durable business send slot. Unknown SMTP outcomes never expire into retries."""
+    __tablename__ = "send_intents"
+    __table_args__ = (UniqueConstraint("tenant_id", "slot_key"),)
+    slot_key: Mapped[str] = mapped_column(String(180))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    outbound_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), unique=True)
+    state: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    soft_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    failed_mailboxes: Mapped[list] = mapped_column(JSONB, default=list)
+    last_error: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    result_message_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
 class DeliveryEvent(TenantOwned, Base):
     __tablename__ = "delivery_events"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -1493,6 +1508,9 @@ class IdempotencyKey(Base):
     """幂等键（G-06）：同一用户 24 小时内重复提交返回首次结果。"""
     __tablename__ = "idempotency_keys"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"),
+                                                       nullable=True, index=True)
+    discard_response: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_false())
     scope: Mapped[str] = mapped_column(String(64), index=True)  # tenant:user
     key: Mapped[str] = mapped_column(String(128))
     fingerprint: Mapped[str] = mapped_column(String(64))

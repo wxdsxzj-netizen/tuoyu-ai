@@ -1,5 +1,6 @@
 """SMTP / IMAP 传输。安全护栏：outbound_allow_real=False（默认）时只允许连接本地测试邮件服务器，绝不外发真实邮件。"""
 import imaplib
+import re
 import smtplib
 import ssl
 from email.message import EmailMessage
@@ -20,6 +21,14 @@ def _guard(host: str | None):
 class SmtpResult:
     def __init__(self, ok: bool, code: int | None = None, kind: str | None = None, detail: str = ""):
         self.ok, self.code, self.kind, self.detail = ok, code, kind, detail  # kind: hard_bounce / soft / auth / connection
+
+
+def recipient_failure(code, detail):
+    text = detail.decode(errors="replace") if isinstance(detail, bytes) else str(detail)
+    status = re.search(r"\b([245]\.\d{1,3}\.\d{1,3})\b", text)
+    permanent_address = status and status[1] in {"5.1.1", "5.1.2", "5.1.3", "5.1.6", "5.2.1"}
+    kind = "hard_bounce" if code >= 500 and permanent_address else ("rejected" if code >= 500 else "soft")
+    return SmtpResult(False, code, kind, text[:300])
 
 
 def _connect(mb, timeout=20):
@@ -64,15 +73,17 @@ def send(mb, msg: EmailMessage) -> SmtpResult:
         refused = c.send_message(msg)
         if refused:
             code, text = next(iter(refused.values()))
-            return SmtpResult(False, code, "hard_bounce" if code >= 500 else "soft", str(text)[:300])
+            return recipient_failure(code, text)
         return SmtpResult(True, 250)
     except smtplib.SMTPRecipientsRefused as e:
         code, text = next(iter(e.recipients.values()))
-        return SmtpResult(False, code, "hard_bounce" if code >= 500 else "soft", str(text)[:300])
+        return recipient_failure(code, text)
     except smtplib.SMTPResponseException as e:
-        return SmtpResult(False, e.smtp_code, "hard_bounce" if e.smtp_code >= 550 else "soft", str(e.smtp_error)[:300])
+        # DATA / sender / policy rejection does not prove an invalid recipient.
+        return SmtpResult(False, e.smtp_code, "rejected" if e.smtp_code >= 500 else "soft", str(e.smtp_error)[:300])
     except Exception as e:  # noqa: BLE001
-        return SmtpResult(False, None, "connection", f"{type(e).__name__}: {e}"[:300])
+        # A disconnect while sending DATA may happen after server acceptance.
+        return SmtpResult(False, None, "unknown", f"{type(e).__name__}: {e}"[:300])
     finally:
         try:
             c.quit()

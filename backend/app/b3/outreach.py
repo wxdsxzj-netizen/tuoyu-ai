@@ -171,9 +171,11 @@ def ab_stats(db: Session, seq: Sequence) -> list[dict]:
 
 
 def sent_today(db: Session, seq: Sequence, now) -> int:
+    from app.outreach.intents import COUNTED
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     return db.scalar(select(func.count()).select_from(OutboundMessage).join(Enrollment, Enrollment.id == OutboundMessage.enrollment_id)
-                     .where(Enrollment.sequence_id == seq.id, OutboundMessage.sent_at >= start)) or 0
+                     .where(Enrollment.sequence_id == seq.id, OutboundMessage.sent_at >= start,
+                            OutboundMessage.status.in_(COUNTED))) or 0
 
 
 # ---------------- 沉睡唤醒 ----------------
