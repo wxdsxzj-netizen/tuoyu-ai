@@ -928,6 +928,7 @@ class AssignmentRule(TenantScoped, Base):
 class CreditEntry(TenantOwned, Base):
     """点数账本（只追加）：grant / hold / consume / release / refund。"""
     __tablename__ = "credit_entries"
+    __table_args__ = (UniqueConstraint("tenant_id", "business_key"),)
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     entry_type: Mapped[str] = mapped_column(String(10))
     action: Mapped[str | None] = mapped_column(String(24), nullable=True)
@@ -939,9 +940,22 @@ class CreditEntry(TenantOwned, Base):
     object_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result: Mapped[str | None] = mapped_column(String(12), nullable=True)  # success / failed / cached
     actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    department_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    business_key: Mapped[str | None] = mapped_column(String(180), nullable=True)
     price_version: Mapped[str] = mapped_column(String(16), default="2026.1")
     note: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class CreditReservation(TenantOwned, TimestampMixin, Base):
+    __tablename__ = "credit_reservations"
+    __table_args__ = (UniqueConstraint("tenant_id", "task_id"),)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    department_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    budget_period: Mapped[str] = mapped_column(String(7))
+    amount: Mapped[float] = mapped_column(Float)
+    remaining: Mapped[float] = mapped_column(Float)
 
 
 class AgentTask(TenantScoped, Base):
@@ -1008,10 +1022,12 @@ class ResearchReport(TenantScoped, Base):
 class Invoice(TenantOwned, Base):
     """手工发票 / 收款记录（P6：不接在线支付，由平台管理员登记）。"""
     __tablename__ = "invoices"
-    __table_args__ = (UniqueConstraint("invoice_no"),)
+    __table_args__ = (UniqueConstraint("invoice_no"), UniqueConstraint("tenant_id", "billing_key", name="uq_invoice_billing_key"))
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     invoice_no: Mapped[str] = mapped_column(String(32))
     period: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 如 2026-10 或 2026Q4
+    billing_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    line_items: Mapped[list] = mapped_column(JSONB, default=list)
     description: Mapped[str] = mapped_column(String(256), default="")
     amount_minor: Mapped[int] = mapped_column(Integer)
     currency: Mapped[str] = mapped_column(String(3), default="CNY")
@@ -1958,6 +1974,7 @@ class ImMessage(TenantScoped, Base):
 class LeadCharge(TenantScoped, Base):
     """按合格商机付费记账。"""
     __tablename__ = "lead_charges"
+    __table_args__ = (UniqueConstraint("tenant_id", "opportunity_id", name="uq_lead_charge_opportunity"),)
     opportunity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     amount_minor: Mapped[int] = mapped_column(Integer)
     currency: Mapped[str] = mapped_column(String(3), default="CNY")

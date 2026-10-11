@@ -86,6 +86,8 @@ def list_budgets(cu: CurrentUser = Depends(require("billing.read")), db: Session
 
 @router.post("/budgets", tags=["billing"])
 def add_budget(body: BudgetIn, request: Request, cu: CurrentUser = Depends(require("budget.manage")), db: Session = Depends(get_db)):
+    from app.agent import credits
+    credits.lock_wallet(db)
     if body.scope != "tenant" and not body.scope_id:
         raise AppError("COMMON_VALIDATION", details={"scope_id": "必填"})
     if body.scope == "tenant" and "billing.manage" not in cu.permissions:
@@ -103,6 +105,8 @@ def add_budget(body: BudgetIn, request: Request, cu: CurrentUser = Depends(requi
 
 @router.delete("/budgets/{bid}", tags=["billing"])
 def del_budget(bid: uuid.UUID, request: Request, cu: CurrentUser = Depends(require("budget.manage")), db: Session = Depends(get_db)):
+    from app.agent import credits
+    credits.lock_wallet(db)
     b = _get(db, Budget, bid)
     b.deleted_at = utcnow()
     audit(db, cu, request, "budget.delete", "budget", b.id)

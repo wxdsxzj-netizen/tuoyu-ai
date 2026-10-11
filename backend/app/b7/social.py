@@ -46,7 +46,7 @@ def complete_phone(db: Session, t: PhoneTask, status: str, note=None, outcome=No
 
 
 def send_meta(db: Session, ch: MetaChannel, peer_id: str, body: str, *, human_only: bool = False) -> MetaMessage:
-    if human_only or ch.status == "mock" or not ch.access_token:
+    if human_only or (ch.status == "mock" and not ch.access_token):
         m = MetaMessage(
             channel_id=ch.id,
             peer_id=peer_id,
@@ -69,10 +69,7 @@ def send_meta(db: Session, ch: MetaChannel, peer_id: str, body: str, *, human_on
                 action_url="/channels",
             )
         return m
-    m = MetaMessage(channel_id=ch.id, peer_id=peer_id, direction="out", body=body, status="sent", human_task=False)
-    db.add(m)
-    db.flush()
-    return m
+    raise AppError("CHANNEL_META_UNAVAILABLE")
 
 
 def receive_meta(db: Session, ch: MetaChannel, peer_id: str, body: str) -> MetaMessage:

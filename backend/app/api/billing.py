@@ -13,7 +13,7 @@ from app.core.audit import write_audit
 from app.core.db import bypass_tenant, get_db, tenant_context, utcnow
 from app.core.deps import CurrentUser, require
 from app.core.errors import AppError
-from app.models import CreditEntry, Invoice, Tenant
+from app.models import CreditEntry, Invoice, LeadCharge, Tenant
 
 router = APIRouter(prefix="/api/v1")
 
@@ -21,7 +21,8 @@ router = APIRouter(prefix="/api/v1")
 def inv_out(i: Invoice) -> dict:
     return {"id": str(i.id), "invoice_no": i.invoice_no, "period": i.period, "description": i.description, "amount_minor": i.amount_minor,
             "currency": i.currency, "credits": i.credits, "status": i.status, "payment_method": i.payment_method, "payment_ref": i.payment_ref,  # noqa: E501
-            "paid_at": i.paid_at.isoformat() if i.paid_at else None, "note": i.note, "created_at": i.created_at.isoformat()}
+            "paid_at": i.paid_at.isoformat() if i.paid_at else None, "note": i.note, "created_at": i.created_at.isoformat(),
+            "line_items": i.line_items or []}
 
 
 # ---------------- 服务函数（API 与命令行共用） ----------------
@@ -49,9 +50,7 @@ def do_grant(db, t: Tenant, amount: float, note: str, operator: str, entry_type=
 
 def next_invoice_no(db) -> str:
     prefix = f"INV-{utcnow():%Y%m}-"
-    with bypass_tenant():
-        n = db.scalar(select(func.count()).select_from(Invoice).where(Invoice.invoice_no.like(prefix + "%"))) or 0
-    return f"{prefix}{n + 1:04d}"
+    return prefix + uuid.uuid4().hex[:20].upper()
 
 
 def create_invoice(db, t: Tenant, *, amount_minor: int, currency: str, credits_: float, period: str | None, description: str,
@@ -69,16 +68,21 @@ def create_invoice(db, t: Tenant, *, amount_minor: int, currency: str, credits_:
 
 def mark_invoice(db, t: Tenant, no: str, status: str, *, method: str | None, ref: str | None, operator: str) -> Invoice:
     with tenant_context(t.id):
-        i = db.scalar(select(Invoice).where(Invoice.invoice_no == no))
+        credits.lock_wallet(db)
+        i = db.scalar(select(Invoice).where(Invoice.invoice_no == no).with_for_update().execution_options(populate_existing=True))
         if not i:
             raise AppError("COMMON_NOT_FOUND")
         if i.status != "issued" or status not in ("paid", "void"):
             raise AppError("COMMON_INVALID_STATE")
         i.status = status
+        if status == "void":
+            for charge in db.scalars(select(LeadCharge).where(LeadCharge.invoice_id == i.id, LeadCharge.status == "billed")
+                                     .with_for_update().execution_options(populate_existing=True)):
+                charge.status = "void"  # Preserve invoice linkage; never silently rebill a voided invoice.
         if status == "paid":
             i.paid_at, i.payment_method, i.payment_ref = utcnow(), method, ref
             if i.credits > 0:  # 已付款才入账点数
-                e = credits.grant(db, i.credits, note=f"发票 {i.invoice_no} 已付款", operator=operator)
+                e = credits.grant(db, i.credits, note=f"发票 {i.invoice_no} 已付款", operator=operator, business_key=f"invoice:{i.id}")
                 i.credit_entry_id = e.id
         write_audit(db, tenant_id=t.id, action=f"billing.invoice.{status}", actor_type="platform", object_type="invoice", object_id=i.id,
                     after={"no": no, "method": method, "ref": ref, "operator": operator})
@@ -151,7 +155,7 @@ def summary(cu: CurrentUser = Depends(require("billing.read")), db: Session = De
         CreditEntry.entry_type == "consume", CreditEntry.result == "success", CreditEntry.created_at >= month0)) or 0
     by_action = dict(db.execute(select(CreditEntry.action, func.sum(CreditEntry.quantity * CreditEntry.unit_price)).where(
         CreditEntry.entry_type == "consume", CreditEntry.result == "success", CreditEntry.created_at >= month0).group_by(CreditEntry.action)).all())  # noqa: E501
-    held = -(db.scalar(select(func.coalesce(func.sum(CreditEntry.credits), 0)).where(CreditEntry.entry_type.in_(("hold", "release")))) or 0)
+    held = credits.outstanding(db)
     granted = db.scalar(select(func.coalesce(func.sum(CreditEntry.credits), 0)).where(CreditEntry.entry_type.in_(("grant", "correction")))) or 0  # noqa: E501
     unpaid = db.scalar(select(func.count()).select_from(Invoice).where(Invoice.status == "issued")) or 0
     return {"balance": bal, "held": round(held, 2), "granted_total": round(granted, 2), "used_this_month": round(float(used), 2),

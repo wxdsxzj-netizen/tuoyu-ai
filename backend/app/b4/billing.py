@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import bypass_tenant, tenant_context, utcnow
 from app.core.errors import AppError
-from app.models import Budget, CreditEntry, Handoff, Invoice, Plan, PriceNotice, Subscription, Tenant, User
+from app.models import Budget, CreditEntry, Handoff, Invoice, LeadCharge, Plan, PriceNotice, Subscription, Tenant, User
 
 DEFAULT_PLANS = [
     dict(code="starter", name="入门版", monthly_fee_minor=99900, seat_fee_minor=19900, included_seats=2, included_credits=300, rollover_pct=100, billing_mode="subscription", lead_price_minor=0,  # noqa: E501
@@ -56,9 +56,12 @@ def month_bounds(d: date) -> tuple[date, date]:
 def subscribe(db: Session, plan_code: str, seats: int, today: date | None = None) -> Subscription:
     """平台管理员设置套餐。升级立即生效（当月补发赠送点数差额），降级下个周期生效。"""
     today = today or date.today()
+    from app.agent import credits
+    credits.lock_wallet(db)
     p = plan(db, plan_code)
     seats = max(seats, p.included_seats)
-    s = subscription(db)
+    s = db.scalar(select(Subscription).where(Subscription.deleted_at.is_(None)).with_for_update()
+                  .execution_options(populate_existing=True).limit(1))
     if s is None:
         a, b = month_bounds(today)
         s = Subscription(plan_code=p.code, seats=seats, status="active", period_start=a, period_end=b)
@@ -82,6 +85,8 @@ def subscribe(db: Session, plan_code: str, seats: int, today: date | None = None
 
 def _grant_included(db, amount: float, note: str):
     if amount > 0:
+        from app.agent import credits
+        credits.lock_wallet(db)
         db.add(CreditEntry(entry_type="grant", action="PLAN_INCLUDED", credits=amount, quantity=amount, note=note))
         db.flush()
 
@@ -101,11 +106,13 @@ def check_seat(db: Session):
 SCOPES = ("tenant", "department", "user", "sequence", "task")
 
 
-def _spent(db: Session, since: datetime, actor_ids=None) -> float:
+def _spent(db: Session, since: datetime, actor_ids=None, department_id=None) -> float:
     q = select(func.coalesce(func.sum(CreditEntry.quantity * CreditEntry.unit_price), 0)).where(
         CreditEntry.entry_type == "consume", CreditEntry.result == "success", CreditEntry.created_at >= since)
     if actor_ids is not None:
         q = q.where(CreditEntry.actor_id.in_(actor_ids))
+    if department_id is not None:
+        q = q.where(CreditEntry.department_id == department_id)
     return round(float(db.scalar(q) or 0), 2)
 
 
@@ -115,12 +122,17 @@ def month_start() -> datetime:
 
 
 def budget_status(db: Session) -> list[dict]:
+    from app.agent import credits
     out = []
     for b in db.scalars(select(Budget).where(Budget.deleted_at.is_(None), Budget.scope.in_(("tenant", "department", "user")))):
-        ids = _scope_users(db, b)
-        used = _spent(db, month_start(), ids)
+        ids = [uuid.UUID(b.scope_id)] if b.scope == "user" else None
+        dept = uuid.UUID(b.scope_id) if b.scope == "department" else None
+        spent = _spent(db, month_start(), ids, dept)
+        reserved = credits.outstanding(db, actor_ids=ids, department_id=dept)
+        used = round(spent + reserved, 2)
         out.append({"id": str(b.id), "scope": b.scope, "scope_id": b.scope_id, "monthly_limit": b.monthly_limit, "used": used, "hard": b.hard,  # noqa: E501
-                    "alert_pct": b.alert_pct, "pct": round(used / b.monthly_limit * 100, 1) if b.monthly_limit else None})
+                    "spent": spent, "reserved": reserved, "alert_pct": b.alert_pct,
+                    "pct": round(used / b.monthly_limit * 100, 1) if b.monthly_limit else None})
     return out
 
 
@@ -136,6 +148,8 @@ def check_budgets(db: Session, amount: float, actor_id) -> None:
     """扣点 / 预占前检查租户、部门、成员三级月度预算（序列、任务两级在各自模块检查）。"""
     if amount <= 0:
         return
+    from app.agent import credits
+    credits.lock_wallet(db)
     rules = db.scalars(select(Budget).where(Budget.deleted_at.is_(None), Budget.scope.in_(("tenant", "department", "user")))).all()
     if not rules:
         return
@@ -145,7 +159,9 @@ def check_budgets(db: Session, amount: float, actor_id) -> None:
             continue
         if b.scope == "department" and (not u or str(u.department_id) != b.scope_id):
             continue
-        used = _spent(db, month_start(), _scope_users(db, b))
+        ids = [uuid.UUID(b.scope_id)] if b.scope == "user" else None
+        dept = uuid.UUID(b.scope_id) if b.scope == "department" else None
+        used = _spent(db, month_start(), ids, dept) + credits.outstanding(db, actor_ids=ids, department_id=dept)
         if used + amount > b.monthly_limit + 1e-9:
             if b.hard:
                 raise AppError("BILLING_BUDGET_EXCEEDED", details={"scope": b.scope, "limit": b.monthly_limit, "used": used, "need": amount})  # noqa: E501
@@ -170,7 +186,10 @@ def estimate(action: str, qty: int, success_rate: float | None = None) -> dict:
 def close_month(db: Session, period: str) -> dict:
     """period = 'YYYY-MM'。幂等：同一周期只结一次。
     结转规则：上月赠送点数中未用部分按套餐比例结转到下月，只结转一次（结转点数下月未用即作废）。"""
-    s = subscription(db)
+    from app.agent import credits
+    credits.lock_wallet(db)
+    s = db.scalar(select(Subscription).where(Subscription.deleted_at.is_(None)).with_for_update()
+                  .execution_options(populate_existing=True).limit(1))
     if not s:
         return {"skipped": "no_subscription"}
     if s.last_closed_period and s.last_closed_period >= period:
@@ -179,6 +198,12 @@ def close_month(db: Session, period: str) -> dict:
     start = datetime(y, m, 1, tzinfo=utcnow().tzinfo)
     end = datetime(y + (m == 12), m % 12 + 1, 1, tzinfo=start.tzinfo)
     p = plan(db, s.plan_code)
+    due_leads = db.scalars(select(LeadCharge).where(LeadCharge.status == "pending", LeadCharge.deleted_at.is_(None),
+        LeadCharge.created_at < end).with_for_update().execution_options(populate_existing=True)).all()
+    if any(c.currency != "CNY" for c in due_leads):
+        raise AppError("COMMON_CURRENCY", details={"reason": "月账单与商机费用币种不同，需核对后结算"})
+    if any(c.amount_minor < 0 or c.invoice_id is not None for c in due_leads):
+        raise AppError("COMMON_INVALID_STATE", details={"reason": "商机费用金额或账单关联异常"})
     rolled_in = float(db.scalar(select(func.coalesce(func.sum(CreditEntry.quantity), 0)).where(
         CreditEntry.action == "ROLLOVER", CreditEntry.created_at >= start, CreditEntry.created_at < end)) or 0)
     included = float(db.scalar(select(func.coalesce(func.sum(CreditEntry.credits), 0)).where(
@@ -195,11 +220,22 @@ def close_month(db: Session, period: str) -> dict:
         # 结转只是标记（点数本就在余额里，credits=0）；下月先消耗结转部分，下月未用即作废
         db.add(CreditEntry(entry_type="grant", action="ROLLOVER", credits=0, quantity=roll, note=f"{period} 未用赠送点数 {roll} 结转到下月"))  # noqa: E501
     extra = max(0, s.seats - p.included_seats)
-    amount = p.monthly_fee_minor + extra * p.seat_fee_minor
+    lead_amount = sum(c.amount_minor for c in due_leads)
+    amount = p.monthly_fee_minor + extra * p.seat_fee_minor + lead_amount
+    lines = [{"type": "subscription", "plan": p.code, "quantity": 1, "unit_minor": p.monthly_fee_minor,
+              "amount_minor": p.monthly_fee_minor},
+             {"type": "extra_seat", "quantity": extra, "unit_minor": p.seat_fee_minor, "amount_minor": extra * p.seat_fee_minor}]
+    lines.extend({"type": "qualified_lead", "charge_id": str(c.id), "opportunity_id": str(c.opportunity_id),
+                  "quantity": 1, "unit_minor": c.amount_minor, "amount_minor": c.amount_minor} for c in due_leads)
     nxt = (end.date())
-    inv = Invoice(invoice_no=f"BL{period.replace('-', '')}-{uuid.uuid4().hex[:4].upper()}", period=period, amount_minor=amount, currency="CNY",  # noqa: E501
-                  credits=0, status="issued", description=f"{p.name} 月费 + 超出席位 {extra} 个", note="月度账单（自动生成）", operator="system")  # noqa: E501
+    inv = Invoice(invoice_no=f"BL{period.replace('-', '')}-{uuid.uuid4().hex[:20].upper()}", period=period,
+                  billing_key=f"monthly:{period}", line_items=lines, amount_minor=amount, currency="CNY",
+                  credits=0, status="issued", description=f"{p.name} 月费 + 超出席位 {extra} 个 + 合格商机 {len(due_leads)} 条",
+                  note="月度账单（自动生成）", operator="system")
     db.add(inv)
+    db.flush()
+    for charge in due_leads:
+        charge.status, charge.invoice_id = "billed", inv.id
     if s.pending_plan:  # 降级在新周期生效
         s.plan_code, s.pending_plan = s.pending_plan, None
         p = plan(db, s.plan_code)

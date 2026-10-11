@@ -157,9 +157,15 @@ def im_inbound(db: Session, ch: ImChannel, user_ext_id: str, text: str) -> dict:
 
 def charge_qualified_lead(db: Session, opp: Opportunity) -> LeadCharge | None:
     """合格商机赢单或接受交付包时，若套餐为 per_lead/hybrid 则记账。"""
-    if not opp.is_qualified:
+    from app.agent.credits import lock_wallet
+    lock_wallet(db)
+    db.flush()
+    opp = db.scalar(select(Opportunity).where(Opportunity.id == opp.id).with_for_update()
+                    .execution_options(populate_existing=True))
+    if not opp or not opp.is_qualified or opp.deleted_at is not None:
         return None
-    sub = db.scalar(select(Subscription).where(Subscription.status == "active"))
+    sub = db.scalar(select(Subscription).where(Subscription.status == "active", Subscription.deleted_at.is_(None))
+                    .execution_options(populate_existing=True))
     if not sub:
         return None
     with bypass_tenant():
@@ -344,14 +350,10 @@ def sla_credit_tick(db: Session, period: str | None = None) -> list:
 
 
 def after_qualified_event(db: Session, opp: Opportunity, event: str, payload: dict) -> None:
-    """赢单 / 接受交付包后的计费与 Webhook。用 savepoint 隔离：失败只记日志，不破坏主事务。"""
+    """业务状态与商机记账原子提交；Webhook故障仍单独隔离。"""
     import logging
 
-    try:
-        with db.begin_nested():
-            charge_qualified_lead(db, opp)
-    except Exception:  # noqa: BLE001
-        logging.getLogger("tl.billing").exception("lead charge failed opp=%s", opp.id)
+    charge_qualified_lead(db, opp)
     try:
         with db.begin_nested():
             emit_webhook(db, event, payload)

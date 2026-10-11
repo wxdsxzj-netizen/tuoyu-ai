@@ -64,7 +64,7 @@ def test_plans_seats_budgets_estimate_usage_month_close_mockpay_notice(client, m
     slug = _slug(client, h)
     _, sh = add_user(client, h, "s@a.com", "sales")
     assert client.get(f"{P}/billing/subscription", headers=h).json()["plan"] is None
-    assert len(client.get(f"{P}/billing/plans", headers=h).json()) in (0, 3)
+    assert len(client.get(f"{P}/billing/plans", headers=h).json()) in (0, 4)
     r = client.put(f"{P}/platform/tenants/{slug}/subscription", headers=PH, json={"plan_code": "starter", "seats": 2})
     assert r.status_code == 200, r.text
     sub = client.get(f"{P}/billing/subscription", headers=h).json()

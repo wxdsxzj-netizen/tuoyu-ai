@@ -279,7 +279,7 @@ class MetaIn(BaseModel):
 
 @router.post("/meta/channels", tags=["meta"])
 def meta_add(body: MetaIn, request: Request, cu: CurrentUser = Depends(require("channel.wa")), db: Session = Depends(get_db)):
-    ch = MetaChannel(**body.model_dump(), status="active" if body.access_token else "mock", created_by=cu.id)
+    ch = MetaChannel(**body.model_dump(), status="unavailable" if body.access_token else "mock", created_by=cu.id)
     db.add(ch)
     db.flush()
     audit(db, cu, request, "meta.channel_create", "meta_channel", ch.id)
@@ -290,7 +290,8 @@ def meta_add(body: MetaIn, request: Request, cu: CurrentUser = Depends(require("
 @router.get("/meta/channels", tags=["meta"])
 def meta_list(cu: CurrentUser = Depends(require("channel.wa")), db: Session = Depends(get_db)):
     return [
-        {"id": str(c.id), "platform": c.platform, "page_name": c.page_name, "status": c.status}
+        {"id": str(c.id), "platform": c.platform, "page_name": c.page_name,
+         "status": "unavailable" if c.access_token else c.status, "outbound_implemented": False}
         for c in db.scalars(select(MetaChannel).where(MetaChannel.deleted_at.is_(None)))
     ]
 
@@ -432,7 +433,8 @@ def im_in(cid: uuid.UUID, body: ImMsgIn, request: Request, cu: CurrentUser = Dep
 @router.get("/billing/lead-charges", tags=["billing"])
 def lead_charges(cu: CurrentUser = Depends(require("billing.read")), db: Session = Depends(get_db)):
     return [
-        {"id": str(c.id), "opportunity_id": str(c.opportunity_id), "amount_minor": c.amount_minor, "status": c.status}
+        {"id": str(c.id), "opportunity_id": str(c.opportunity_id), "amount_minor": c.amount_minor, "status": c.status,
+         "currency": c.currency, "invoice_id": str(c.invoice_id) if c.invoice_id else None}
         for c in db.scalars(select(LeadCharge).order_by(LeadCharge.created_at.desc()).limit(100))
     ]
 

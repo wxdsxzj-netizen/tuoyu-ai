@@ -23,7 +23,13 @@ def _run(job_id: str, tenant_id: str, fn):
                 job.result = fn(job, db)
                 job.status, job.progress = "succeeded", 100
             except Exception as e:  # noqa: BLE001
-                job.status, job.error = "failed", str(e)[:2000]
+                db.rollback()
+                job = db.get(Job, uuid.UUID(job_id))
+                if job is None:
+                    return
+                # Database exception text can contain SQL values or provider credentials.
+                from app.core.errors import AppError
+                job.status, job.error = "failed", e.code if isinstance(e, AppError) else type(e).__name__
             write_audit(db, tenant_id=tid, action=f"job.{job.status}", actor_type="system",
                         object_type="job", object_id=job.id)
             db.commit()

@@ -108,7 +108,9 @@ def _can_act(user, h: Handoff) -> bool:
 
 def accept(db: Session, h: Handoff, user) -> Opportunity:
     """接受：建 / 更新客户 + 商机 + 判定 is_qualified（BR-7-11），一次事务；行锁防重复领取。"""
-    h = db.scalar(select(Handoff).where(Handoff.id == h.id).with_for_update())
+    from app.agent.credits import lock_wallet
+    lock_wallet(db)
+    h = db.scalar(select(Handoff).where(Handoff.id == h.id).with_for_update().execution_options(populate_existing=True))
     if h.status != "pending":
         raise AppError("COMMON_ALREADY_TAKEN" if h.status == "accepted" else "COMMON_INVALID_STATE")
     if not _can_act(user, h):

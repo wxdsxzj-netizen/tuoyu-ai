@@ -55,6 +55,10 @@ def release(db: Session, acc: Account, user) -> Account:
 
 # ---------------- 商机 ----------------
 def change_stage(db: Session, opp: Opportunity, stage: str, lost_reason: str | None = None) -> dict:
+    from app.agent.credits import lock_wallet
+    lock_wallet(db)  # Same tenant-first order as invoicing and qualified-lead charging.
+    opp = db.scalar(select(Opportunity).where(Opportunity.id == opp.id).with_for_update()
+                    .execution_options(populate_existing=True))
     if stage not in STAGES:
         raise AppError("COMMON_VALIDATION")
     if opp.stage in ("won",):
