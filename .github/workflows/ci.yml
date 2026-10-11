@@ -41,12 +41,13 @@ jobs:
           RESTORE_TEST_REDIS_URL: redis://127.0.0.1:6379/1
           RESTORE_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
+          export RESTORE_DOCKER_BIN="$(command -v docker)"
           mkdir -p "$RUNNER_TEMP/restore-pg"
           for tool in pg_dump pg_restore psql; do
             cat > "$RUNNER_TEMP/restore-pg/$tool" <<'WRAPPER'
           #!/usr/bin/env bash
           set -euo pipefail
-          exec docker exec -i -e PGPASSWORD -e PGUSER "$RESTORE_POSTGRES_CONTAINER" "$(basename "$0")" "$@"
+          exec "$RESTORE_DOCKER_BIN" exec -i -e PGPASSWORD -e PGUSER "$RESTORE_POSTGRES_CONTAINER" "$(basename "$0")" "$@"
           WRAPPER
             chmod +x "$RUNNER_TEMP/restore-pg/$tool"
           done
