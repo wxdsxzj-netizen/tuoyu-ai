@@ -1,10 +1,11 @@
 import io
+import uuid
 
 from tests.conftest import add_user, register
 
 
 def up(client, h, typ, content: str, name="data.csv", **form):
-    return client.post("/api/v1/imports", headers=h, data={"type": typ, **form},
+    return client.post("/api/v1/imports", headers=h, data={"request_id": str(uuid.uuid4()), "type": typ, **form},
                        files={"file": (name, io.BytesIO(content.encode("utf-8")), "text/csv")})
 
 
@@ -99,13 +100,15 @@ def test_import_custom_mapping_and_validation(client):
 
 def test_import_gbk_file(client):
     h = register(client, "a@x.com")
-    r = client.post("/api/v1/imports", headers=h, data={"type": "companies"},
+    r = client.post("/api/v1/imports", headers=h, data={"request_id": str(uuid.uuid4()), "type": "companies"},
                     files={"file": ("g.csv", io.BytesIO("公司名称,国家\n杭州某某阀门有限公司,中国\n".encode("gb18030")), "text/csv")})
     assert client.get(f"/api/v1/imports/{r.json()['id']}", headers=h).json()["created"] == 1
 
 
 def test_enrich_contacts_mock_provider(client):
+    from tests.test_p5 import topup
     h = register(client, "a@x.com")
+    topup(client, h, 20)
     c = client.post("/api/v1/companies", headers=h, json={"name": "Acme", "domain": "acme.com", "country": "US"}).json()["company"]
     r = client.post(f"/api/v1/companies/{c['id']}:enrich-contacts", headers=h, json={"limit": 3}).json()
     assert r["provider"] == "mock" and r["created"] == 3
@@ -121,7 +124,9 @@ def test_enrich_contacts_mock_provider(client):
 def test_real_provider_without_key_fails_cleanly(client):
     from app.core.config import Settings
     from app.data.providers import build_provider, set_provider
+    from tests.test_p5 import topup
     h = register(client, "a@x.com")
+    topup(client, h, 20)
     c = client.post("/api/v1/companies", headers=h, json={"name": "Acme", "domain": "acme.com"}).json()["company"]
     set_provider(build_provider("apollo", Settings(apollo_api_key="")))
     try:

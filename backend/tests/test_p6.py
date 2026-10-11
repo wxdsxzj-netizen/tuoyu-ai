@@ -1,6 +1,8 @@
 """P6：平台充值 / 手工发票、试点评分放宽、超支暂停参照、健康检查与指标、结构化日志。"""
 import json
 import logging
+import secrets
+import uuid
 
 import pytest
 
@@ -12,12 +14,12 @@ from tests.test_p4 import _log
 from tests.test_p5 import _companies
 
 P = "/api/v1"
-TOK = {"X-Platform-Admin-Token": "plat-secret", "X-Operator": "ops-alice"}
+TOK = {"X-Platform-Admin-Token": secrets.token_urlsafe(32), "X-Operator": "ops-alice"}
 
 
 @pytest.fixture
 def plat(monkeypatch):
-    monkeypatch.setattr(get_settings(), "platform_admin_token", "plat-secret")
+    monkeypatch.setattr(get_settings(), "platform_admin_token", TOK["X-Platform-Admin-Token"])
 
 
 def _slug(client, h):
@@ -75,7 +77,7 @@ def test_agent_insufficient_without_topup_and_overrun_uses_upper_bound(client, p
     from tests.test_p3 import ready_tenant
     ready_tenant(client, h)
     _companies(client, h, 2, country="US")
-    t = client.post(f"{P}/agent/tasks", headers=h, json={"text": "找 2 家美国暖通分销商的采购经理"}).json()
+    t = client.post(f"{P}/agent/tasks", headers=h, json={"request_id": str(uuid.uuid4()), "text": "找 2 家美国暖通分销商的采购经理"}).json()
     assert client.post(f"{P}/agent/tasks/{t['id']}:confirm", headers=h).json()["error"]["code"] == "BILLING_INSUFFICIENT"
     client.post(f"{P}/platform/tenants/{_slug(client, h)}/credits", headers=TOK, json={"amount": 100, "note": "充值"})
     t = client.post(f"{P}/agent/tasks/{t['id']}:confirm", headers=h).json()
@@ -125,9 +127,10 @@ def test_health_metrics_and_json_logs(client, monkeypatch):
     assert r["db"] and r["redis"] and r["migrations"]
     m = client.get("/metrics")
     assert m.status_code == 200 and "tl_http_requests_total" in m.text and "tl_db_up 1.0" in m.text and "tl_mailboxes" in m.text
-    monkeypatch.setattr(get_settings(), "metrics_token", "mtok")
+    metrics_token = secrets.token_urlsafe(32)
+    monkeypatch.setattr(get_settings(), "metrics_token", metrics_token)
     assert client.get("/metrics").status_code == 403
-    assert client.get("/metrics", headers={"Authorization": "Bearer mtok"}).status_code == 200
+    assert client.get("/metrics", headers={"Authorization": f"Bearer {metrics_token}"}).status_code == 200
     from app.core.context import trace_id_var
     from app.core.observability import JsonFormatter
     tok = trace_id_var.set("abc123")
@@ -153,6 +156,6 @@ def test_env_template_and_production_check():
     bad = production_problems(Settings(_env_file=None))
     assert any("TL_JWT_SECRET" in x for x in bad) and any("TL_CREDENTIALS_KEY" in x for x in bad)
     from cryptography.fernet import Fernet
-    good = Settings(_env_file=None, jwt_secret="x" * 40, credentials_key=Fernet.generate_key().decode(), unsubscribe_secret="u" * 20,
+    good = Settings(_env_file=None, jwt_secret=secrets.token_urlsafe(40), credentials_key=Fernet.generate_key().decode(), unsubscribe_secret=secrets.token_urlsafe(20),
                     public_base_url="https://app.example.com", llm_primary="qwen", crawl_allow_private=False, celery_eager=False)
     assert production_problems(good) == []

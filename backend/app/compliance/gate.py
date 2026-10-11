@@ -30,7 +30,7 @@ def active_consent(db: Session, email: str | None, channel="email_marketing") ->
                                                  ConsentRecord.basis.in_(CONSENT_BASES)).limit(1))
 
 
-def check_contact(db: Session, contact: Contact, *, channel: str = "email", reverify: bool = False) -> dict:
+def check_contact(db: Session, contact: Contact, *, channel: str = "email", reverify: bool = False, actor_id=None) -> dict:
     blocks, warnings, needs = [], [], []
     email = contact.email
     if contact.restricted_at:  # BR-5-31 限制处理
@@ -46,7 +46,7 @@ def check_contact(db: Session, contact: Contact, *, channel: str = "email", reve
     else:
         stale = not contact.email_verified_at or contact.email_verified_at < utcnow() - timedelta(days=get_settings().reverify_days)
         if stale and reverify:
-            apply_to_contact(contact, verify_email(db, email))
+            apply_to_contact(contact, verify_email(db, email, actor_id=actor_id or contact.created_by, object_id=contact.id))
         st = contact.email_status
         if st == "catch_all":
             warnings.append({"code": "CATCH_ALL_LOW_FREQUENCY", "detail": "每域名每天 ≤ 1 封，单箱占比 ≤ 10%"})

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Card, Checkbox, Form, Input, InputNumber, Select, Space, Table, Tag, Tooltip, message } from 'antd'
+import { Alert, Button, Card, Checkbox, Form, Input, InputNumber, Select, Space, Table, Tag, Tooltip, message } from 'antd'
 import { useTranslation } from 'react-i18next'
 import dayjs from 'dayjs'
 import { api } from '../api/client'
+import { useJobPolling } from '../api/useJobPolling'
 import { useAuth } from '../auth'
 
 interface Crawl { id: string; urls: string[]; status: string; pages_fetched: number; pages_skipped_robots: number; pages_failed: number; items_created: number; log: { method?: string } | null; error: string | null; created_at: string }
@@ -13,36 +14,26 @@ export default function KbPage() {
   const { t } = useTranslation()
   const { can } = useAuth()
   const manage = can('kb.manage')
-  const [crawls, setCrawls] = useState<Crawl[]>([])
+  const { items: crawls, reload: loadCrawls, error: pollError } = useJobPolling<Crawl>('/kb/crawls')
   const [items, setItems] = useState<Item[]>([])
   const [total, setTotal] = useState(0)
   const [filters, setFilters] = useState<{ type?: string; status?: string; page: number }>({ status: 'pending', page: 1 })
   const [sel, setSel] = useState<string[]>([])
-  const timer = useRef<number>()
-
-  const loadCrawls = useCallback(async () => {
-    const r = await api.get<Crawl[]>('/kb/crawls'); setCrawls(r.data)
-    return r.data
-  }, [])
+  const previousActive = useRef(false)
   const loadItems = useCallback(async () => {
     const r = await api.get('/kb/items', { params: { ...filters, size: 50 } })
     setItems(r.data.items); setTotal(r.data.total); setSel([])
   }, [filters])
-  useEffect(() => { loadCrawls() }, [loadCrawls])
   useEffect(() => { loadItems() }, [loadItems])
-  useEffect(() => () => window.clearInterval(timer.current), [])
-
-  const poll = () => {
-    window.clearInterval(timer.current)
-    timer.current = window.setInterval(async () => {
-      const cs = await loadCrawls()
-      if (!cs.some((c) => ['queued', 'running'].includes(c.status))) { window.clearInterval(timer.current); loadItems() }
-    }, 2000)
-  }
+  useEffect(() => {
+    const active = crawls.some(c => ['queued', 'running'].includes(c.status))
+    if (previousActive.current && !active) loadItems()
+    previousActive.current = active
+  }, [crawls, loadItems])
   const start = async (v: { urls: string; rights_confirmed: boolean; max_pages: number }) => {
     const urls = v.urls.split(/\s+/).map((s) => s.trim()).filter(Boolean)
     await api.post('/kb/crawls', { urls, rights_confirmed: !!v.rights_confirmed, max_pages: v.max_pages })
-    message.success(t('kb.start')); poll()
+    message.success(t('kb.start')); loadCrawls()
   }
   const batch = async (ids: string[], action: 'confirm' | 'reject') => {
     await api.post('/kb/items:batch', { ids, action }); loadItems()
@@ -62,6 +53,7 @@ export default function KbPage() {
         </Form>
       </Card>}
       <Card title={t('kb.history')} size="small">
+        {pollError && <Alert type="warning" showIcon message="任务状态刷新失败，正在重试。" />}
         <Table rowKey="id" size="small" dataSource={crawls} pagination={false} columns={[
           { title: 'URL', dataIndex: 'urls', render: (v: string[]) => v.join(', ') },
           { title: t('kb.status'), dataIndex: 'status', render: (v) => <Tag color={COLORS[v]}>{t(`status.${v}`)}</Tag> },

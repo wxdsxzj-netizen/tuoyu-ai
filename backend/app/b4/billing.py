@@ -5,12 +5,12 @@ import hashlib
 import uuid
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.db import bypass_tenant, tenant_context, utcnow
 from app.core.errors import AppError
-from app.models import Budget, CreditEntry, Handoff, Invoice, LeadCharge, Plan, PriceNotice, Subscription, Tenant, User
+from app.models import Budget, CreditEntry, CreditReservation, Handoff, Invoice, LeadCharge, Plan, PriceNotice, Subscription, Tenant, User
 
 DEFAULT_PLANS = [
     dict(code="starter", name="入门版", monthly_fee_minor=99900, seat_fee_minor=19900, included_seats=2, included_credits=300, rollover_pct=100, billing_mode="subscription", lead_price_minor=0,  # noqa: E501
@@ -58,6 +58,7 @@ def subscribe(db: Session, plan_code: str, seats: int, today: date | None = None
     today = today or date.today()
     from app.agent import credits
     credits.lock_wallet(db)
+    ensure_current_period(db)
     p = plan(db, plan_code)
     seats = max(seats, p.included_seats)
     s = db.scalar(select(Subscription).where(Subscription.deleted_at.is_(None)).with_for_update()
@@ -83,11 +84,12 @@ def subscribe(db: Session, plan_code: str, seats: int, today: date | None = None
     return s
 
 
-def _grant_included(db, amount: float, note: str):
+def _grant_included(db, amount: float, note: str, *, effective_at=None, business_key=None):
     if amount > 0:
         from app.agent import credits
         credits.lock_wallet(db)
-        db.add(CreditEntry(entry_type="grant", action="PLAN_INCLUDED", credits=amount, quantity=amount, note=note))
+        db.add(CreditEntry(entry_type="grant", action="PLAN_INCLUDED", credits=amount, quantity=amount, note=note,
+                           created_at=effective_at or utcnow(), business_key=business_key))
         db.flush()
 
 
@@ -183,6 +185,21 @@ def estimate(action: str, qty: int, success_rate: float | None = None) -> dict:
 
 
 # ---------------- 月结：赠送点数结转 + 账单 ----------------
+def ensure_current_period(db: Session) -> None:
+    """Catch up closed periods before new paid work; existing held tasks bypass this guard."""
+    for _ in range(120):
+        s = db.scalar(select(Subscription).where(Subscription.deleted_at.is_(None)).execution_options(populate_existing=True).limit(1))
+        if not s or s.status not in ("active", "trial", "past_due") or s.period_end >= utcnow().date():
+            return
+        period = s.period_start.strftime("%Y-%m")
+        result = close_month(db, period)
+        if result.get("blocked"):
+            raise AppError("BILLING_MONTH_CLOSE_PENDING", details=result)
+        if result.get("skipped"):
+            raise AppError("BILLING_MONTH_CLOSE_PENDING", details={"period": period, "reason": "subscription_period_inconsistent"})
+    raise AppError("BILLING_MONTH_CLOSE_PENDING", details={"reason": "catchup_limit"})
+
+
 def close_month(db: Session, period: str) -> dict:
     """period = 'YYYY-MM'。幂等：同一周期只结一次。
     结转规则：上月赠送点数中未用部分按套餐比例结转到下月，只结转一次（结转点数下月未用即作废）。"""
@@ -192,11 +209,21 @@ def close_month(db: Session, period: str) -> dict:
                   .execution_options(populate_existing=True).limit(1))
     if not s:
         return {"skipped": "no_subscription"}
+    if s.status not in ("active", "trial", "past_due"):
+        return {"skipped": "inactive_subscription"}
     if s.last_closed_period and s.last_closed_period >= period:
         return {"skipped": "already_closed"}
-    y, m = map(int, period.split("-"))
-    start = datetime(y, m, 1, tzinfo=utcnow().tzinfo)
-    end = datetime(y + (m == 12), m % 12 + 1, 1, tzinfo=start.tzinfo)
+    try:
+        y, m = map(int, period.split("-"))
+        start = datetime(y, m, 1, tzinfo=utcnow().tzinfo)
+        end = datetime(y + (m == 12), m % 12 + 1, 1, tzinfo=start.tzinfo)
+    except (ValueError, TypeError):
+        raise AppError("COMMON_VALIDATION", details={"period": "YYYY-MM"}) from None
+    if end > utcnow() or s.period_start.replace(day=1) != start.date():
+        raise AppError("COMMON_INVALID_STATE", details={"reason": "只能按顺序结算已结束的订阅月份", "expected": str(s.period_start)[:7]})
+    reserved = credits.outstanding(db)
+    if reserved > 0:
+        return {"blocked": "pending_reservations", "period": period, "reserved": reserved}
     p = plan(db, s.plan_code)
     due_leads = db.scalars(select(LeadCharge).where(LeadCharge.status == "pending", LeadCharge.deleted_at.is_(None),
         LeadCharge.created_at < end).with_for_update().execution_options(populate_existing=True)).all()
@@ -206,19 +233,25 @@ def close_month(db: Session, period: str) -> dict:
         raise AppError("COMMON_INVALID_STATE", details={"reason": "商机费用金额或账单关联异常"})
     rolled_in = float(db.scalar(select(func.coalesce(func.sum(CreditEntry.quantity), 0)).where(
         CreditEntry.action == "ROLLOVER", CreditEntry.created_at >= start, CreditEntry.created_at < end)) or 0)
-    included = float(db.scalar(select(func.coalesce(func.sum(CreditEntry.credits), 0)).where(
-        CreditEntry.action == "PLAN_INCLUDED", CreditEntry.created_at >= start, CreditEntry.created_at < end)) or 0) + rolled_in
-    used = float(db.scalar(select(func.coalesce(func.sum(CreditEntry.quantity * CreditEntry.unit_price), 0)).where(
-        CreditEntry.entry_type == "consume", CreditEntry.result == "success", CreditEntry.created_at >= start, CreditEntry.created_at < end)) or 0)  # noqa: E501
-    unused_included = max(0.0, included - used)
-    fresh_unused = max(0.0, unused_included - rolled_in)  # 先消耗结转点数；结转点数不再二次结转
+    fresh = float(db.scalar(select(func.coalesce(func.sum(CreditEntry.credits), 0)).where(
+        CreditEntry.action == "PLAN_INCLUDED", CreditEntry.created_at >= start, CreditEntry.created_at < end)) or 0)
+    used = float(db.scalar(select(func.coalesce(func.sum(CreditEntry.quantity * CreditEntry.unit_price), 0))
+        .outerjoin(CreditReservation, and_(CreditReservation.task_id == CreditEntry.task_id,
+                                         CreditReservation.tenant_id == CreditEntry.tenant_id))
+        .where(CreditEntry.entry_type == "consume", CreditEntry.result == "success", or_(
+            and_(CreditEntry.credits < 0, CreditEntry.created_at >= start, CreditEntry.created_at < end),
+            and_(CreditEntry.credits == 0, CreditReservation.budget_period == period)))) or 0)
+    old_unused = max(0.0, rolled_in - used)
+    fresh_unused = max(0.0, fresh - max(0.0, used - rolled_in))
     roll = round(fresh_unused * p.rollover_pct / 100, 2)
-    expire = round(unused_included - roll, 2)
+    expire = round(old_unused + fresh_unused - roll, 2)
     if expire > 0:
-        db.add(CreditEntry(entry_type="correction", action="EXPIRE", credits=-expire, quantity=expire, note=f"{period} 未用赠送点数作废"))
+        db.add(CreditEntry(entry_type="correction", action="EXPIRE", credits=-expire, quantity=expire,
+                           created_at=end, business_key=f"expire:{s.id}:{period}", note=f"{period} 未用赠送点数作废"))
     if roll > 0:
         # 结转只是标记（点数本就在余额里，credits=0）；下月先消耗结转部分，下月未用即作废
-        db.add(CreditEntry(entry_type="grant", action="ROLLOVER", credits=0, quantity=roll, note=f"{period} 未用赠送点数 {roll} 结转到下月"))  # noqa: E501
+        db.add(CreditEntry(entry_type="grant", action="ROLLOVER", credits=0, quantity=roll, created_at=end,
+                           business_key=f"rollover:{s.id}:{period}", note=f"{period} 未用赠送点数 {roll} 结转到下月"))
     extra = max(0, s.seats - p.included_seats)
     lead_amount = sum(c.amount_minor for c in due_leads)
     amount = p.monthly_fee_minor + extra * p.seat_fee_minor + lead_amount
@@ -241,14 +274,23 @@ def close_month(db: Session, period: str) -> dict:
         p = plan(db, s.plan_code)
     s.period_start, s.period_end = month_bounds(nxt)
     s.last_closed_period = period
-    _grant_included(db, p.included_credits, f"{nxt:%Y-%m} 套餐赠送（{p.name}）")
+    _grant_included(db, p.included_credits, f"{nxt:%Y-%m} 套餐赠送（{p.name}）", effective_at=end,
+                    business_key=f"included:{s.id}:{nxt:%Y-%m}")
     db.flush()
+    from app.core.audit import write_audit
+    write_audit(db, tenant_id=inv.tenant_id, action="billing.month_closed", actor_type="system",
+                object_type="invoice", object_id=inv.id,
+                after={"period": period, "amount_minor": amount, "rollover": roll, "expired": expire, "used": round(used, 2)})
     return {"period": period, "invoice_no": inv.invoice_no, "amount_minor": amount, "rollover": roll, "expired": expire, "used": round(used, 2)}  # noqa: E501
 
 
 def month_close_all(period: str | None = None) -> dict:
     from app.core.db import SessionLocal
-    period = period or (date.today().replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    period = period or (utcnow().date().replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    try:
+        target = datetime.strptime(period, "%Y-%m").date()
+    except (ValueError, TypeError):
+        raise AppError("COMMON_VALIDATION", details={"period": "YYYY-MM"}) from None
     db = SessionLocal()
     out = {}
     try:
@@ -257,8 +299,30 @@ def month_close_all(period: str | None = None) -> dict:
         for tid in tids:
             with tenant_context(tid):
                 db.info["tenant_id"] = tid
-                out[str(tid)] = close_month(db, period)
-                db.commit()
+                closed = []
+                try:
+                    for _ in range(120):
+                        s = db.scalar(select(Subscription).where(Subscription.deleted_at.is_(None))
+                                      .execution_options(populate_existing=True).limit(1))
+                        if not s or s.status not in ("active", "trial", "past_due"):
+                            out[str(tid)] = {"skipped": "no_active_subscription"}
+                            break
+                        if s.period_start.replace(day=1) > target:
+                            out[str(tid)] = ({**out[str(tid)], "closed_periods": closed} if closed
+                                            else {"skipped": "already_closed"})
+                            break
+                        result = close_month(db, s.period_start.strftime("%Y-%m"))
+                        out[str(tid)] = result
+                        db.commit()
+                        if result.get("blocked") or result.get("skipped"):
+                            break
+                        closed.append(result["period"])
+                    else:
+                        out[str(tid)] = {"blocked": "catchup_limit", "closed_periods": closed}
+                except Exception as exc:  # noqa: BLE001
+                    db.rollback()
+                    out[str(tid)] = {"error": exc.code if isinstance(exc, AppError) else type(exc).__name__,
+                                     "closed_periods": closed}
     finally:
         db.close()
     return out

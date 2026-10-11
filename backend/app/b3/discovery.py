@@ -197,7 +197,9 @@ def contact_filter(db: Session, f: dict):
     if f.get("countries"):
         st = st.join(Company, Company.id == Contact.company_id).where(Company.country.in_(f["countries"]))
     if f.get("email_status"):
-        st = st.where(Contact.email_status.in_(f["email_status"]))
+        # Older UI saved accept_all; preserve those lists using the canonical status.
+        statuses = ["catch_all" if s == "accept_all" else s for s in f["email_status"]]
+        st = st.where(Contact.email_status.in_(statuses))
     if f.get("seniority"):
         st = st.where(Contact.seniority.in_(f["seniority"]))
     if f.get("title_contains"):

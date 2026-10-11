@@ -4,6 +4,7 @@ import { Alert, Button, Descriptions, Drawer, Form, Input, Modal, Select, Space,
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
 
+const PAGE_SIZE = 20
 const ST_COLOR: Record<string, string> = { received: 'blue', verifying: 'gold', pending_info: 'orange', processing: 'purple', completed: 'green', rejected: 'default' }
 
 export default function DsrPage() {
@@ -16,7 +17,7 @@ export default function DsrPage() {
   const [found, setFound] = useState<any>()
   const [code, setCode] = useState<string>()
   const load = useCallback(async () => {
-    const r = await api.get('/dsr', { params: { ...f, size: 20 } }); setRows(r.data.items); setTotal(r.data.total)
+    const r = await api.get('/dsr', { params: { ...f, size: PAGE_SIZE } }); setRows(r.data.items); setTotal(r.data.total)
   }, [f])
   useEffect(() => { load() }, [load])
   const act = async (action: string, body: any = {}) => {
@@ -51,7 +52,7 @@ export default function DsrPage() {
         <Button type="primary" onClick={() => setCreating(true)}>{t('p3.newDsr')}</Button>
       </Space>
       <Alert style={{ marginBottom: 12 }} type="info" showIcon message={t('p3.dsrHint')} />
-      <Table rowKey="id" columns={cols} dataSource={rows} pagination={{ total, current: f.page, onChange: (p) => setF({ ...f, page: p }) }} />
+      <Table rowKey="id" columns={cols} dataSource={rows} pagination={{ total, current: f.page, pageSize: PAGE_SIZE, showSizeChanger: false, onChange: (p) => setF({ ...f, page: p }) }} />
       <Modal open={creating} title={t('p3.newDsr')} footer={null} onCancel={() => setCreating(false)} destroyOnClose>
         <Form layout="vertical" onFinish={async (v) => {
           const body = { ...v, rectify_changes: v.type === 'rectify' && v.title ? { title: v.title } : undefined }

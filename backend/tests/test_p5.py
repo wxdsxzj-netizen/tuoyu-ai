@@ -1,4 +1,5 @@
 """P5：询盘评分与分配、一句话任务（Agent）、点数、AI 背调、经营看板。不访问外网（官网抓取用 MockTransport）。"""
+import uuid
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -160,16 +161,16 @@ def test_agent_prospect_task_plan_gate_credits_rollback(client, monkeypatch):
     ready_tenant(client, h)
     _companies(client, h, country="US")
     # 帮助问答模式
-    hp = client.post(f"{P}/agent/tasks", headers=sh, json={"text": "如何绑定发件箱？"}).json()
+    hp = client.post(f"{P}/agent/tasks", headers=sh, json={"request_id": str(uuid.uuid4()), "text": "如何绑定发件箱？"}).json()
     assert hp["mode"] == "help" and hp["status"] == "completed" and "找 200 家" in hp["answer"]
     # 缺参数 → 追问 → 补充后生成计划
-    t = client.post(f"{P}/agent/tasks", headers=sh, json={"text": "帮我开发一些新客户"}).json()
+    t = client.post(f"{P}/agent/tasks", headers=sh, json={"request_id": str(uuid.uuid4()), "text": "帮我开发一些新客户"}).json()
     assert t["status"] == "draft" and len(t["questions"]) == 3
     t = client.post(f"{P}/agent/tasks/{t['id']}:answer", headers=sh, json={"text": "波兰 暖通 20家"}).json()
     assert t["status"] == "plan_pending" and t["intent"]["country"] == "PL" and t["intent"]["count"] == 20
     client.post(f"{P}/agent/tasks/{t['id']}:cancel", headers=sh)
     # 一句话任务；要求 L2 但租户上限 L1 → 有效 L1，被租户限制
-    t = client.post(f"{P}/agent/tasks", headers=sh, json={"text": "找 3 家美国暖通分销商的采购经理，用我们的新款热泵开发", "autonomy": "L2"}).json()
+    t = client.post(f"{P}/agent/tasks", headers=sh, json={"request_id": str(uuid.uuid4()), "text": "找 3 家美国暖通分销商的采购经理，用我们的新款热泵开发", "autonomy": "L2"}).json()
     assert t["status"] == "plan_pending", t
     assert t["intent"] == {**t["intent"], "count": 3, "country": "US", "industry": "HVAC", "company_type": "distributor", "product": "新款热泵"}
     assert t["effective_autonomy"] == "L1" and t["limited_by"] == "tenant"
@@ -180,7 +181,7 @@ def test_agent_prospect_task_plan_gate_credits_rollback(client, monkeypatch):
     est = t["estimate"]
     assert est["low"] <= est["mid"] <= est["high"] and est["high"] == pytest.approx(3 * 1 + 3 * 0.2 + 3 * 2)
     # 预算不足
-    tb = client.post(f"{P}/agent/tasks", headers=sh, json={"text": "找 3 家德国暖通分销商的采购经理", "budget": 1}).json()
+    tb = client.post(f"{P}/agent/tasks", headers=sh, json={"request_id": str(uuid.uuid4()), "text": "找 3 家德国暖通分销商的采购经理", "budget": 1}).json()
     r = client.post(f"{P}/agent/tasks/{tb['id']}:confirm", headers=sh)
     assert r.status_code == 409 and r.json()["error"]["code"] == "AGENT_BUDGET_EXCEEDED"
     # 确认 → 执行到审批节点暂停
@@ -222,7 +223,7 @@ def test_agent_prospect_task_plan_gate_credits_rollback(client, monkeypatch):
                         "values (gen_random_uuid(), :t, 'consume', -5000, 0, 0, '2026.1', now())"), {"t": tid})
         db.commit()
     db.close()
-    t2 = client.post(f"{P}/agent/tasks", headers=sh, json={"text": "找 3 家德国暖通分销商的采购经理"}).json()
+    t2 = client.post(f"{P}/agent/tasks", headers=sh, json={"request_id": str(uuid.uuid4()), "text": "找 3 家德国暖通分销商的采购经理"}).json()
     assert client.post(f"{P}/agent/tasks/{t2['id']}:confirm", headers=sh).json()["error"]["code"] == "BILLING_INSUFFICIENT"
     # 隔离：其他业务员看不到；其他租户看不到
     _, sh2 = add_user(client, h, "s2@a.com", "sales")
@@ -235,7 +236,7 @@ def test_agent_reject_list_batch_and_pause(client):
     h = register(client, "o@a.com")
     topup(client, h)
     _companies(client, h, 2)
-    t = client.post(f"{P}/agent/tasks", headers=h, json={"text": "找 2 家德国暖通进口商的采购经理"}).json()
+    t = client.post(f"{P}/agent/tasks", headers=h, json={"request_id": str(uuid.uuid4()), "text": "找 2 家德国暖通进口商的采购经理"}).json()
     t = client.post(f"{P}/agent/tasks/{t['id']}:confirm", headers=h).json()
     if t["status"] == "paused":
         t = client.post(f"{P}/agent/tasks/{t['id']}:resume", headers=h).json()
@@ -243,7 +244,7 @@ def test_agent_reject_list_batch_and_pause(client):
     t = client.post(f"{P}/agent/tasks/{t['id']}:decide", headers=h, json={"approve": False, "note": "名单不合适"}).json()
     assert t["status"] == "completed" and "enrollment_ids" not in t["context"]  # 名单批次被拒 → 剔除该批，任务继续（BR-12-08）
     # L0：扣费步骤也需审批；暂停 / 取消释放预占
-    t = client.post(f"{P}/agent/tasks", headers=h, json={"text": "找 2 家德国暖通进口商的采购经理", "autonomy": "L0"}).json()
+    t = client.post(f"{P}/agent/tasks", headers=h, json={"request_id": str(uuid.uuid4()), "text": "找 2 家德国暖通进口商的采购经理", "autonomy": "L0"}).json()
     assert all(s["approval"] for s in t["plan"] if s["tool"] in ("contact.find", "email.verify", "research.report", "list.enroll"))
     t = client.post(f"{P}/agent/tasks/{t['id']}:confirm", headers=h).json()
     assert t["status"] == "waiting_approval" and t["pending_approval"]["tool"] == "contact.find"

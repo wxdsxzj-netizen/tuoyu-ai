@@ -22,6 +22,9 @@ export default function BillingPage() {
   }
   if (!s) return null
   return <>
+    {s.settlement?.blocked && <Alert type="warning" showIcon style={{ marginBottom: 12 }}
+      message={`月结等待 ${s.settlement.period} 的预占结清`}
+      description={`还有 ${s.settlement.reserved} 点预占。请先完成或取消原任务，再补跑月结；新付费任务暂停，其他服务不受影响。`} />}
     {s.low_balance && <Alert type="warning" showIcon message={t('p5.lowBalance')} style={{ marginBottom: 12 }} />}
     <Row gutter={16} style={{ marginBottom: 12 }}>
       <Col span={5}><Card size="small"><Statistic title={t('p5.balance')} value={s.balance} /></Card></Col>

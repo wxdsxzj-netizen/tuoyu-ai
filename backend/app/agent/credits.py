@@ -56,6 +56,34 @@ def balance(db: Session) -> float:
     return round(float(db.scalar(select(func.coalesce(func.sum(CreditEntry.credits), 0))) or 0), 2)
 
 
+def authorize(db: Session, action: str, qty: float, *, actor_id=None, task_id=None, held=False) -> None:
+    """Check the maximum cost before an external call; retain the wallet lock until settlement/commit."""
+    _amount(qty)
+    if action not in PRICES:
+        raise AppError("COMMON_VALIDATION")
+    amount = round(PRICES[action] * qty, 2)
+    if amount <= 0:
+        return
+    lock_wallet(db)
+    user = actor(db, actor_id)
+    if actor_id and (not user or not user.is_active or user.deleted_at):
+        raise AppError("COMMON_FORBIDDEN")
+    if held:
+        reserve = reservation(db, task_id)
+        if not reserve or amount > reserve.remaining + 1e-9:
+            raise AppError("BILLING_INSUFFICIENT", details={"need": amount, "reserved": reserve.remaining if reserve else 0})
+        if reserve.actor_id != actor_id:
+            raise AppError("COMMON_FORBIDDEN")
+        return
+    from app.b4.billing import ensure_current_period
+    ensure_current_period(db)
+    available = balance(db)
+    if available < amount:
+        raise AppError("BILLING_INSUFFICIENT", details={"need": amount, "balance": available})
+    from app.b4.billing import check_budgets
+    check_budgets(db, amount, actor_id)
+
+
 def hold(db: Session, task_id, amount: float, actor_id=None) -> None:
     amount = _amount(amount)
     if amount <= 0:
@@ -68,6 +96,8 @@ def hold(db: Session, task_id, amount: float, actor_id=None) -> None:
         if existing.amount != amount or existing.actor_id != actor_id:
             raise AppError("COMMON_VERSION_CONFLICT")
         return
+    from app.b4.billing import ensure_current_period
+    ensure_current_period(db)
     if balance(db) < amount:
         raise AppError("BILLING_INSUFFICIENT", details={"need": amount, "balance": balance(db)})
     user = actor(db, actor_id)
@@ -118,6 +148,9 @@ def consume(db: Session, action: str, qty: float, *, task_id=None, held=False, o
             raise AppError("COMMON_FORBIDDEN")
         reserve.remaining = round(reserve.remaining - amount, 2)
         actor_id = reserve.actor_id
+    if not held and amount > 0:
+        from app.b4.billing import ensure_current_period
+        ensure_current_period(db)
     if not held and amount > 0 and balance(db) < amount:
         raise AppError("BILLING_INSUFFICIENT", details={"need": amount, "balance": balance(db)})
     if not held and amount > 0:

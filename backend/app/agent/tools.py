@@ -42,12 +42,9 @@ def t_company_search(db, task, step, user):
 
 
 def t_contact_find(db, task, step, user):
-    from app.core.db import utcnow
-    from app.data.providers import get_provider
-    from app.data.upsert import upsert_contact
+    from app.data.enrichment import enrich_contacts
     roles = step["args"].get("roles") or ["purchasing"]
     out, found, failed = [], 0, 0
-    prov = get_provider()
     for cid in _ctx(task).get("company_ids", []):
         c = db.get(Company, cid)
         have = list(db.scalars(select(Contact).where(Contact.company_id == c.id, Contact.deleted_at.is_(None), Contact.email.is_not(None))))
@@ -58,21 +55,12 @@ def t_contact_find(db, task, step, user):
         if not c.domain:
             failed += 1
             continue
-        try:
-            people = prov.search_people(domain=c.domain, titles=roles, limit=1)
-        except Exception:  # noqa: BLE001
-            people = []
-        p = next((p for p in people if p.email), None)
-        if not p:
+        result = enrich_contacts(db, c, titles=roles, limit=1, actor_id=user.id, task_id=task.id, held=True)
+        if not result["contact_ids"]:
             failed += 1
-            credits.consume(db, "EMAIL_FIND", 1, task_id=task.id, held=True, object_type="company", object_id=c.id, result="failed", actor_id=user.id)  # noqa: E501
             continue
-        r = upsert_contact(db, {"full_name": p.full_name, "title": p.title, "email": p.email, "email_confidence": p.email_confidence,
-                                "country": p.country or c.country, "source_fetched_at": utcnow()}, company=c, actor_id=user.id, source=prov.name)  # noqa: E501
-        db.flush()
-        credits.consume(db, "EMAIL_FIND", 1, task_id=task.id, held=True, object_type="contact", object_id=r.obj.id, actor_id=user.id)
-        out.append(str(r.obj.id))
-        found += 1
+        out.extend(result["contact_ids"])
+        found += result["created"]
     return {"contact_ids": out}, {"contacts": len(out), "newly_found": found, "not_found": failed}
 
 
@@ -81,16 +69,14 @@ def t_email_verify(db, task, step, user):
     keep, stats = [], {}
     for cid in _ctx(task).get("contact_ids", []):
         c = db.get(Contact, cid)
-        if c.email_status in ("valid", "accept_all") and c.email_verified_at:
+        if c.email_status in ("valid", "catch_all") and c.email_verified_at:
             res_status = c.email_status
         else:
-            res = verify_email(db, c.email)
+            res = verify_email(db, c.email, actor_id=user.id, task_id=task.id, held=True, object_id=c.id)
             apply_to_contact(c, res)
             res_status = res.status
-            credits.consume(db, "EMAIL_VERIFY", 1, task_id=task.id, held=True, object_type="contact", object_id=c.id,
-                            result="failed" if res.status == "unknown" else "success", actor_id=user.id)
         stats[res_status] = stats.get(res_status, 0) + 1
-        if res_status in ("valid", "accept_all"):
+        if res_status in ("valid", "catch_all"):
             keep.append(cid)
     return {"contact_ids": keep}, {"verified": stats, "kept": len(keep)}
 

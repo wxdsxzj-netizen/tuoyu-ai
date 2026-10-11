@@ -165,9 +165,9 @@ def test_samples_orders_payments_fx_unlock_repurchase(client):
     o = client.post(f"{P}/orders", headers=sh, json={"account_id": acc["id"], "total_minor": 1250000, "currency": "EUR", "payment_plan": plan}).json()
     assert "total_minor" in o, o
     assert o["total_minor"] == 1250000 and o["overdue"][0]["short_minor"] == 375000
-    o = client.post(f"{P}/orders/{o['id']}/payments", headers=sh, json={"amount_minor": 375000, "ref": "TT001"}).json()
+    o = client.post(f"{P}/orders/{o['id']}/payments", headers=sh, json={"request_id": str(uuid.uuid4()), "amount_minor": 375000, "ref": "TT001"}).json()
     assert o["overdue"] == []
-    assert client.post(f"{P}/orders/{o['id']}/payments", headers=sh, json={"amount_minor": 9999999}).json()["error"]["code"] == "CRM_PAYMENT_INVALID"
+    assert client.post(f"{P}/orders/{o['id']}/payments", headers=sh, json={"request_id": str(uuid.uuid4()), "amount_minor": 9999999}).json()["error"]["code"] == "CRM_PAYMENT_INVALID"
     # 赢单 → 复购任务
     for st in ("needs_confirmed", "quotation", "negotiation", "won"):
         client.post(f"{P}/opportunities/{opp['id']}:stage", headers=sh, json={"stage": st})

@@ -1,6 +1,7 @@
 import random
+import secrets
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 from sqlalchemy import select, text
 
@@ -13,11 +14,11 @@ from tests.test_p2_compliance import mk_contact, ready_tenant
 from tests.test_p5 import _ctx_db, topup
 
 P = "/api/v1"
-PH = {"X-Platform-Admin-Token": "plat-secret"}
+PH = {"X-Platform-Admin-Token": secrets.token_urlsafe(32)}
 
 
 def _plat(monkeypatch):
-    monkeypatch.setattr(get_settings(), "platform_admin_token", "plat-secret")
+    monkeypatch.setattr(get_settings(), "platform_admin_token", PH["X-Platform-Admin-Token"])
 
 
 def _slug(client, h):
@@ -70,7 +71,7 @@ def test_plans_seats_budgets_estimate_usage_month_close_mockpay_notice(client, m
     sub = client.get(f"{P}/billing/subscription", headers=h).json()
     assert sub["plan"]["code"] == "starter" and sub["seats"] == 2 and sub["active_users"] == 2
     assert client.get(f"{P}/billing/summary", headers=h).json()["balance"] == 300
-    r = client.post(f"{P}/users", headers=h, json={"email": "x3@a.com", "name": "x3", "password": "Passw0rd!x9", "role_code": "sales"})
+    r = client.post(f"{P}/users", headers=h, json={"email": "x3@a.com", "name": "x3", "password": "Aa1!" + secrets.token_urlsafe(16), "role_code": "sales"})
     assert r.status_code == 409 and r.json()["error"]["code"] == "BILLING_SEATS_EXCEEDED"
     assert client.put(f"{P}/platform/tenants/{slug}/subscription", headers=PH, json={"plan_code": "growth", "seats": 5}).json()["plan"] == "growth"
     assert client.get(f"{P}/billing/summary", headers=h).json()["balance"] == 1200
@@ -101,6 +102,9 @@ def test_plans_seats_budgets_estimate_usage_month_close_mockpay_notice(client, m
     assert u["total"] == 2 and {x["credits"] for x in u["by_user"]} == {1.0}
     # 月结：结转 + 账单 + 降级生效（幂等）
     period = date.today().strftime("%Y-%m")
+    from app.b4 import billing
+    next_month = (datetime.now(UTC).replace(day=1) + timedelta(days=32)).replace(day=1, hour=0, minute=0, second=0)
+    monkeypatch.setattr(billing, "utcnow", lambda: next_month)
     r = client.post(f"{P}/platform/billing:close-month", headers=PH, json={"period": period}).json()[str(tid)]
     assert r["rollover"] == 1200 - 2 and r["expired"] == 0 and r["amount_minor"] == 299900 and r["invoice_no"].startswith("BL")
     assert client.post(f"{P}/platform/billing:close-month", headers=PH, json={"period": period}).json()[str(tid)]["skipped"] == "already_closed"

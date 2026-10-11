@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card, Descriptions, Input, List, Space, Table, Tabs, Tag, Upload, message } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
@@ -36,27 +36,40 @@ function Customs() {
   const { t } = useTranslation()
   const [domain, setDomain] = useState('kraft-hvac.de')
   const [hs, setHs] = useState('8481')
+  const [exporter, setExporter] = useState('')
+  const [rivals, setRivals] = useState<any>()
+  const [errors, setErrors] = useState<string[]>([])
+  const generation = useRef(0)
+  useEffect(() => { const ref = generation; return () => { ref.current++ } }, [])
   const [chain, setChain] = useState<any>()
   const [peers, setPeers] = useState<any>()
   const [cycle, setCycle] = useState<any>()
   const [mkt, setMkt] = useState<any>()
   const run = () => {
-    api.get('/customs/supply-chain', { params: { domain } }).then(r => setChain(r.data))
-    api.get('/customs/buy-cycle', { params: { domain } }).then(r => setCycle(r.data))
-    api.get('/customs/supplier-switch', { params: { domain } }).then(r => setPeers(r.data))
-    api.get('/customs/peers', { params: { exporter_domain: 'nbvalve.cn', hs } }).then(r => setPeers((p: any) => ({ ...p, rivals: r.data })))
-    api.get('/customs/market', { params: { hs } }).then(r => setMkt(r.data))
+    const current = ++generation.current
+    setChain(undefined); setCycle(undefined); setPeers(undefined); setRivals(undefined); setMkt(undefined); setErrors([])
+    const fetchPart = (path: string, params: any, label: string, save: (v: any) => void) => {
+      api.get(path, { params }).then(r => { if (current === generation.current) save(r.data) })
+        .catch(() => { if (current === generation.current) setErrors(v => [...v, label]) })
+    }
+    fetchPart('/customs/supply-chain', { domain }, t('b6.suppliers'), setChain)
+    fetchPart('/customs/buy-cycle', { domain }, t('b6.buyCycle'), setCycle)
+    fetchPart('/customs/supplier-switch', { domain }, t('b6.switched'), setPeers)
+    if (exporter.trim()) fetchPart('/customs/peers', { exporter_domain: exporter.trim(), hs }, t('b6.peers'), setRivals)
+    fetchPart('/customs/market', { hs }, t('b6.marketTotal'), setMkt)
   }
   return <>
     <Space style={{ marginBottom: 12 }}><Input value={domain} onChange={e => setDomain(e.target.value)} style={{ width: 200 }} placeholder="domain" />
-      <Input value={hs} onChange={e => setHs(e.target.value)} style={{ width: 100 }} placeholder="HS" /><Button type="primary" onClick={run}>{t('b6.analyze')}</Button></Space>
+      <Input value={hs} onChange={e => setHs(e.target.value)} style={{ width: 100 }} placeholder="HS" /><Input value={exporter} onChange={e => setExporter(e.target.value)} style={{ width: 200 }} placeholder="exporter domain" /><Button type="primary" onClick={run}>{t('b6.analyze')}</Button></Space>
     <Alert type="info" showIcon style={{ marginBottom: 12 }} message={t('b6.customsNote')} />
+    {!exporter.trim() && <Alert type="info" message="输入出口商域名可同时分析同业。" />}
+    {!!errors.length && <Alert type="error" message={`部分分析加载失败：${errors.join('、')}。请重试。`} />}
     {cycle && <Descriptions size="small" title={t('b6.buyCycle')} column={3} items={[{ key: 'm', label: t('b6.medianDays'), children: cycle.median_days ?? '—' },
       { key: 'n', label: t('b6.nextWindow'), children: cycle.next_window ?? '—' }, { key: 's', label: t('b6.shipments'), children: cycle.shipments }]} />}
     {peers?.switched != null && <Alert style={{ marginTop: 8 }} type={peers.switched ? 'warning' : 'success'} message={peers.switched ? t('b6.switched', { a: peers.previous_main, b: peers.current_main }) : t('b6.noSwitch')} />}
     {chain && <Table size="small" style={{ marginTop: 12 }} title={() => t('b6.suppliers')} rowKey="name" pagination={false} dataSource={chain.suppliers}
       columns={[{ title: t('b6.name'), dataIndex: 'name' }, { title: t('b6.shipments'), dataIndex: 'shipments' }, { title: 'USD', dataIndex: 'value_usd' }, { title: 'HS', dataIndex: 'hs_codes', render: (v: any) => (v || []).join(',') }]} />}
-    {peers?.rivals && <Table size="small" style={{ marginTop: 12 }} title={() => t('b6.peers')} rowKey="exporter" pagination={false} dataSource={peers.rivals.rivals}
+    {rivals && <Table size="small" style={{ marginTop: 12 }} title={() => t('b6.peers')} rowKey="exporter" pagination={false} dataSource={rivals.rivals}
       columns={[{ title: t('b6.exporter'), dataIndex: 'exporter' }, { title: t('b6.sharedBuyers'), dataIndex: 'shared_buyers' }, { title: t('b6.shipments'), dataIndex: 'shipments' }]} />}
     {mkt && <>
       <ResponsiveContainer width="100%" height={220}><BarChart data={mkt.months}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="month" /><YAxis /><Tooltip /><Bar dataKey="value" fill="#1677ff" /></BarChart></ResponsiveContainer>

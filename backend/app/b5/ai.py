@@ -204,13 +204,38 @@ def kb_text_for(db: Session, lang: str | None) -> str:
 
 
 # ---------------- 深度研究问答 ----------------
+def _complete_citations(answer: str, required: set[str]) -> bool:
+    """Accept only cited clauses, all required references, and no invented IDs."""
+    if not required or not answer or len(answer) > 12000:
+        return False
+    found = set()
+    for clause in re.split(r"[;；。.!?！？\n]+", answer):
+        clause = clause.strip()
+        if not clause:
+            continue
+        matches = list(re.finditer(r"【([^【】]+)】", clause))
+        if not matches or clause[matches[-1].end():].strip():
+            return False
+        for match in matches:
+            refs = {x.strip() for x in re.split(r"[,，、]", match.group(1))}
+            if not refs or not refs <= required:
+                return False
+            found.update(refs)
+    return found == required
+
+
 def ask_report(db: Session, r: ResearchReport, question: str, user_id) -> ResearchQuestion:
     """只依据报告条目 + 证据回答；每句都要引用证据编号；找不到依据就明确说不知道。"""
     facts = []
+    evidence_ids = {e.get("id") for e in r.evidence or [] if isinstance(e, dict) and isinstance(e.get("id"), str)}
     for sec in r.sections or []:
         for it in sec.get("items") or []:
             if isinstance(it, dict):
-                facts.append({"section": sec.get("title"), "text": it.get("text"), "evidence": it.get("evidence") or [], "inferred": it.get("inferred", False)})  # noqa: E501
+                refs = it.get("evidence") or []
+                facts.append({"section": sec.get("title"), "text": it.get("text"),
+                              "evidence": [e for e in refs if isinstance(e, str) and e in evidence_ids],
+                              "unresolved": any(not isinstance(e, str) or e not in evidence_ids for e in refs),
+                              "inferred": it.get("inferred", False)})  # noqa: E501
     qw = {w for w in re.findall(r"[a-z0-9]{3,}|[\u4e00-\u9fff]{2}", question.lower())}
     scored = []
     for f in facts:
@@ -225,16 +250,18 @@ def ask_report(db: Session, r: ResearchReport, question: str, user_id) -> Resear
         ans, cites, grounded = "报告中没有找到能回答这个问题的依据。可以强制刷新背调，或换个问法。", [], False
     else:
         cites = sorted({e for f in top for e in f["evidence"]})
-        ans = "；".join(f"{f['text']}" + (f"【{','.join(f['evidence'])}】" if f["evidence"] else "【推断】") for f in top)
-        grounded = any(f["evidence"] for f in top)
-        try:
-            res = guarded_chat([{"role": "user", "content": json.dumps({"QUESTION": question, "FACTS": top, "RULE": "仅用 FACTS 回答并保留【证据编号】"},  # noqa: E501
-                                                                         ensure_ascii=False)}], temperature=0.1)
-            model = f"{res.provider}:{res.model}"
-            if res.content and all(f"【{c}" in res.content or c in res.content for c in cites[:1]):
-                ans = res.content  # 真实模型且保留引用时采用；否则用规则拼接
-        except Exception:  # noqa: BLE001
-            pass
+        ans = "；".join(("（推断）" if f["inferred"] else "") + str(f["text"]) +
+                         (f"【{','.join(f['evidence'])}】" if f["evidence"] else "【无可核验证据】") for f in top)
+        grounded = all(f["evidence"] and not f["unresolved"] and not f["inferred"] for f in top)
+        if grounded:
+            try:
+                payload = {"QUESTION": question, "FACTS": top,
+                           "RULE": "仅用 FACTS 回答。每句话末尾标注【证据编号】，完整保留全部引用，不得创造新引用或事实。"}
+                res = guarded_chat([{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}], temperature=0.1)
+                if res.provider != "mock" and not res.model.lower().startswith("mock") and _complete_citations(res.content, set(cites)):
+                    ans, model = res.content, f"{res.provider}:{res.model}"
+            except Exception:  # noqa: BLE001
+                pass
     q = ResearchQuestion(report_id=r.id, question=question, answer=ans, citations=cites, grounded=grounded, model=model, created_by=user_id)
     db.add(q)
     db.flush()

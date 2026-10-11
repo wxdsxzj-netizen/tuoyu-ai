@@ -1,4 +1,5 @@
 import io
+import uuid
 
 from tests.conftest import add_user, register
 
@@ -9,7 +10,7 @@ def seed_won(client, h, n_valves=7, n_pumps=4):
         rows.append(f"Valve Dist {i},{'DE' if i % 2 else 'PL'},HVAC 分销,20-200,{1000 * (i + 1)}")
     for i in range(n_pumps):
         rows.append(f"Pump Co {i},US,水泵批发,200-500,500")
-    r = client.post("/api/v1/imports", headers=h, data={"type": "won_customers"},
+    r = client.post("/api/v1/imports", headers=h, data={"request_id": str(uuid.uuid4()), "type": "won_customers"},
                     files={"file": ("w.csv", io.BytesIO("\n".join(rows).encode()), "text/csv")})
     j = client.get(f"/api/v1/imports/{r.json()['id']}", headers=h).json()
     assert j["created"] == n_valves + n_pumps, j

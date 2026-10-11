@@ -504,21 +504,12 @@ class EnrichIn(BaseModel):
 def enrich_contacts(cid: uuid.UUID, body: EnrichIn, request: Request,
                     cu: CurrentUser = Depends(require("contact.enrich")), db: Session = Depends(get_db)):
     c = _company(db, cid)
-    if not c.domain:
-        raise AppError("COMMON_INVALID_STATE", details={"reason": "公司缺少官网域名"})
-    provider = get_provider()
-    people = provider.search_people(domain=c.domain, titles=body.titles, limit=body.limit)
-    counts = {"created": 0, "merged": 0, "skipped": 0}
-    for p in people:
-        vals = {"full_name": p.full_name, "title": p.title, "department": p.department, "seniority": p.seniority,
-                "email": p.email, "email_confidence": p.email_confidence, "phone": p.phone,
-                "linkedin_url": p.linkedin_url, "country": p.country or c.country, "source_fetched_at": utcnow()}
-        r = upsert_contact(db, vals, company=c, actor_id=cu.id, source=provider.name)
-        counts["skipped" if r.action == "suspect" else r.action] += 1
+    from app.data.enrichment import enrich_contacts as enrich
+    result = enrich(db, c, titles=body.titles, limit=body.limit, actor_id=cu.id)
     write_audit(db, tenant_id=cu.tenant_id, action="contact.enrich", actor_id=cu.id, object_type="company",
-                object_id=c.id, after={"provider": provider.name, **counts}, request=request)
+                object_id=c.id, after=result, request=request)
     db.commit()
-    return {"provider": provider.name, **counts}
+    return result
 
 
 # =============== 联系人 ===============
@@ -692,32 +683,58 @@ def preview_import(type: str = Form(..., pattern="^(companies|contacts|won_custo
 
 @router.post("/imports", status_code=202, response_model=ImportOut, tags=["imports"])
 def create_import(request: Request, type: str = Form(..., pattern="^(companies|contacts|won_customers)$"),
+                  request_id: uuid.UUID = Form(...),
                   mapping: str | None = Form(None), dry_run: bool = Form(False), file: UploadFile = File(...),
                   cu: CurrentUser = Depends(require("import.run")), db: Session = Depends(get_db)):
+    import hashlib
     import json
+
+    from app.core.submission import existing
     path = _save_upload(file, cu.tenant_id)
+    committed = False
     try:
-        headers, rows = read_rows(path)
-    except ValueError as e:
-        raise AppError("FILE_TYPE_NOT_ALLOWED", details={"reason": str(e)}) from None
-    if not rows:
-        raise AppError("IMPORT_NO_ROWS")
-    if len(rows) > get_settings().import_max_rows:
-        raise AppError("COMMON_LIMIT", details={"max_rows": get_settings().import_max_rows})
-    m = json.loads(mapping) if mapping else auto_mapping(type, headers)
-    if not isinstance(m, dict) or any(h not in headers for h in m.values()) or any(f not in FIELDS[type] for f in m):
-        raise AppError("IMPORT_MAPPING_INVALID", details={"headers": headers})
-    if miss := missing_required(type, m):
-        raise AppError("IMPORT_MAPPING_INVALID", details={"missing": miss})
-    job = ImportJob(type=type, filename=(file.filename or "")[:256], file_path=path, mapping=m, dry_run=dry_run,
-                    total=len(rows), created_by=cu.id)
-    db.add(job)
-    db.flush()
-    write_audit(db, tenant_id=cu.tenant_id, action="import.start", actor_id=cu.id, object_type="import_job",
-                object_id=job.id, after={"type": type, "rows": len(rows), "dry_run": dry_run}, request=request)
-    db.commit()
-    from app.tasks.jobs import import_task
-    import_task.delay(str(job.id), str(cu.tenant_id), str(cu.id))
+        try:
+            headers, rows = read_rows(path)
+        except ValueError as e:
+            raise AppError("FILE_TYPE_NOT_ALLOWED", details={"reason": str(e)}) from None
+        if not rows:
+            raise AppError("IMPORT_NO_ROWS")
+        if len(rows) > get_settings().import_max_rows:
+            raise AppError("COMMON_LIMIT", details={"max_rows": get_settings().import_max_rows})
+        try:
+            m = json.loads(mapping) if mapping else auto_mapping(type, headers)
+        except (ValueError, TypeError):
+            raise AppError("IMPORT_MAPPING_INVALID") from None
+        if not isinstance(m, dict) or any(h not in headers for h in m.values()) or any(f not in FIELDS[type] for f in m):
+            raise AppError("IMPORT_MAPPING_INVALID", details={"headers": headers})
+        if miss := missing_required(type, m):
+            raise AppError("IMPORT_MAPPING_INVALID", details={"missing": miss})
+        with open(path, "rb") as uploaded:
+            file_hash = hashlib.file_digest(uploaded, "sha256").hexdigest()
+        job, digest = existing(db, ImportJob, cu.id, request_id,
+            {"type": type, "mapping": m, "dry_run": dry_run, "file_hash": file_hash, "filename": file.filename})
+        if job is None:
+            job = ImportJob(type=type, filename=(file.filename or "")[:256], file_path=path, mapping=m, dry_run=dry_run,
+                            total=len(rows), created_by=cu.id, request_id=request_id, request_hash=digest)
+            db.add(job)
+            db.flush()
+            write_audit(db, tenant_id=cu.tenant_id, action="import.start", actor_id=cu.id, object_type="import_job",
+                        object_id=job.id, after={"type": type, "rows": len(rows), "dry_run": dry_run}, request=request)
+            db.commit()
+            committed = True
+        else:
+            db.commit()
+    finally:
+        if not committed:
+            os.unlink(path)  # A retried or rejected upload must not leave a second attachment.
+    if job.status == "queued":
+        from app.tasks.jobs import import_task
+        try:
+            import_task.delay(str(job.id), str(cu.tenant_id), str(cu.id))
+        except Exception:  # noqa: BLE001
+            # The durable queued row is recovered by the periodic dispatcher.
+            import logging
+            logging.getLogger(__name__).warning("Import queued for dispatch recovery")
     db.refresh(job)
     return job
 

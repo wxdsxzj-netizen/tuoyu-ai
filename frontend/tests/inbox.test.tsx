@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import InboxPage from '../src/pages/Inbox'
+import { MemoryRouter } from 'react-router-dom'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn() }))
 vi.mock('../src/api/client', () => ({ api }))
@@ -29,6 +30,8 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
+function renderInbox(path = '/inbox') { return render(<MemoryRouter initialEntries={[path]}><InboxPage /></MemoryRouter>) }
+
 async function select(id: string) {
   fireEvent.click((await screen.findAllByText(`${id}@buyer.test`))[0])
 }
@@ -39,7 +42,7 @@ describe('conversation identity across asynchronous inbox operations', () => {
     const a = deferred<ReturnType<typeof detail>>()
     api.get.mockImplementation((path: string) => path === '/conversations/A' ? a.promise : Promise.resolve(
       path === '/conversations' ? { data: { items: [conversation('A'), conversation('B')] } } : detail('B')))
-    render(<InboxPage />)
+    renderInbox()
     await select('A')
     await select('B')
     await screen.findByText('message from B')
@@ -57,7 +60,7 @@ describe('conversation identity across asynchronous inbox operations', () => {
     const suggestion = deferred<{ data: { drafts: { body: string }[] } }>()
     const b = deferred<ReturnType<typeof detail>>()
     api.post.mockReturnValue(suggestion.promise)
-    render(<InboxPage />)
+    renderInbox()
     await select('A')
     await screen.findByText('message from A')
     fireEvent.click(screen.getByText('p4.aiDraft'))
@@ -74,7 +77,7 @@ describe('conversation identity across asynchronous inbox operations', () => {
   it('does not authorize a changed draft with an older precheck response', async () => {
     const check = deferred<typeof checked>()
     api.post.mockReturnValue(check.promise)
-    render(<InboxPage />)
+    renderInbox()
     await select('A')
     await screen.findByText('message from A')
     fireEvent.change(replyBox(), { target: { value: 'checked text' } })
@@ -87,7 +90,7 @@ describe('conversation identity across asynchronous inbox operations', () => {
   it('keeps B selected and preserves its draft when a pending A send completes', async () => {
     const sent = deferred<{ data: object }>()
     api.post.mockImplementation((path: string) => path.endsWith(':reply') ? sent.promise : Promise.resolve(checked))
-    render(<InboxPage />)
+    renderInbox()
     await select('A')
     await screen.findByText('message from A')
     fireEvent.change(replyBox(), { target: { value: 'A reply' } })
@@ -104,4 +107,18 @@ describe('conversation identity across asynchronous inbox operations', () => {
       ['/conversations/A:reply', { body: 'A reply' }],
     ])
   })
+})
+
+it('opens a conversation supplied by an inquiry deep link', async () => {
+  renderInbox('/inbox?c=B')
+  await screen.findByText('message from B')
+  expect(api.get).toHaveBeenCalledWith('/conversations/B')
+})
+
+it('shows an unavailable deep-linked conversation without exposing a previous detail', async () => {
+  api.get.mockImplementation((path: string) => path === '/conversations/missing' ? Promise.reject({ response: { status: 404 } })
+    : Promise.resolve({ data: { items: [conversation('A')] } }))
+  renderInbox('/inbox?c=missing')
+  await screen.findByText('会话不存在或无权查看。')
+  expect(screen.queryByPlaceholderText('p4.replyPh')).toBeNull()
 })

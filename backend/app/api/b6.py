@@ -328,7 +328,7 @@ class WaAccountIn(BaseModel):
 
 @router.get("/whatsapp/accounts", tags=["whatsapp"])
 def wa_accounts(cu: CurrentUser = Depends(require("channel.wa")), db: Session = Depends(get_db)):
-    return [{"id": str(a.id), "display_phone": a.display_phone, "status": a.status, "daily_limit": a.daily_limit, "sent_today": a.sent_today}  # noqa: E501
+    return [{"id": str(a.id), "display_phone": a.display_phone, "status": a.status, "daily_limit": a.daily_limit, "sent_today": channels.sent_today(db, a.id)}  # noqa: E501
             for a in db.scalars(select(WhatsAppAccount).where(WhatsAppAccount.deleted_at.is_(None)))]
 
 

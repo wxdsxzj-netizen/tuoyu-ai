@@ -93,7 +93,7 @@ function Lists() {
       <Form.Item noStyle shouldUpdate>{() => form.getFieldValue('kind') === 'dynamic' && <>
         <Form.Item name="seniority"><Select mode="multiple" style={{ width: 200 }} placeholder={t('b3.seniority')} options={['c_level', 'vp', 'director', 'manager', 'staff'].map(v => ({ value: v, label: t('b3.s_' + v) }))} /></Form.Item>
         <Form.Item name="countries"><Input placeholder={t('b3.countriesPh')} style={{ width: 140 }} /></Form.Item>
-        <Form.Item name="email_status"><Select mode="multiple" style={{ width: 160 }} placeholder={t('b3.emailStatus')} options={['valid', 'accept_all', 'unknown'].map(v => ({ value: v, label: v }))} /></Form.Item></>}</Form.Item>
+        <Form.Item name="email_status"><Select mode="multiple" style={{ width: 160 }} placeholder={t('b3.emailStatus')} options={['valid', 'catch_all', 'unknown'].map(v => ({ value: v, label: v }))} /></Form.Item></>}</Form.Item>
       <Button type="primary" onClick={create}>{t('b3.createList')}</Button>
     </Form>
     <Table rowKey="id" size="small" dataSource={rows} columns={[

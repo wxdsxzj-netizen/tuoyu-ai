@@ -86,7 +86,7 @@ def verify_one(cid: uuid.UUID, request: Request, force: bool = False, cu: Curren
     c = _contact(db, cid)
     if not c.email:
         raise AppError("COMMON_INVALID_STATE", details={"reason": "联系人没有邮箱"})
-    r = verify_email(db, c.email, force=force)
+    r = verify_email(db, c.email, force=force, actor_id=cu.id, object_id=c.id)
     apply_to_contact(c, r)
     write_audit(db, tenant_id=cu.tenant_id, action="contact.verify", actor_id=cu.id, object_type="contact", object_id=c.id,
                 after={"status": r.status, "reasons": r.reason_codes, "provider": r.provider, "cached": r.cached}, request=request)
@@ -103,7 +103,7 @@ def verify_provider(cu: CurrentUser = Depends(require("contact.verify"))):
 @router.get("/contacts/{cid}/compliance-check", tags=["compliance"])
 def compliance_check(cid: uuid.UUID, reverify: bool = False, cu: CurrentUser = Depends(require("compliance.read")),
                      db: Session = Depends(get_db)):
-    res = check_contact(db, _contact(db, cid), reverify=reverify)
+    res = check_contact(db, _contact(db, cid), reverify=reverify, actor_id=cu.id)
     db.commit()
     return res
 

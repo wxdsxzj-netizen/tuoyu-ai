@@ -23,8 +23,8 @@ def remove_synthetic_plans():
         db.commit()
 
 
-def setup_month(client):
-    auth = register(client, "owner@month-audit.example.com")
+def setup_month(client, email="owner@month-audit.example.com"):
+    auth = register(client, email)
     me = client.get("/api/v1/auth/me", headers=auth).json()
     tid = uuid.UUID(me["tenant"]["id"])
     with tenant_context(tid), SessionLocal() as db:
@@ -198,4 +198,5 @@ def test_lead_migration_rejects_legacy_duplicates_and_preserves_invoice_evidence
     with pytest.raises(RuntimeError, match="line-item evidence"):
         command.downgrade(cfg, "0018")
     with engine.connect() as conn:
-        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "0019"
+        from alembic.script import ScriptDirectory
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == ScriptDirectory.from_config(cfg).get_current_head()

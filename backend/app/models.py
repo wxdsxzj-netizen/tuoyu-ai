@@ -239,6 +239,9 @@ class Contact(TenantScoped, Base):
 class ImportJob(TenantScoped, Base):
     """C-40 通用导入。"""
     __tablename__ = "import_jobs"
+    __table_args__ = (UniqueConstraint("tenant_id", "created_by", "request_id", name="uq_import_submission"),)
+    request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     type: Mapped[str] = mapped_column(String(32))  # companies / contacts / won_customers
     filename: Mapped[str] = mapped_column(String(256))
     file_path: Mapped[str] = mapped_column(String(1024))
@@ -961,6 +964,9 @@ class CreditReservation(TenantOwned, TimestampMixin, Base):
 class AgentTask(TenantScoped, Base):
     """一句话任务（SM-03）。"""
     __tablename__ = "agent_tasks"
+    __table_args__ = (UniqueConstraint("tenant_id", "created_by", "request_id", name="uq_agent_submission"),)
+    request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     input_text: Mapped[str] = mapped_column(Text)
     mode: Mapped[str] = mapped_column(String(10), default="task")  # task / help
     intent: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

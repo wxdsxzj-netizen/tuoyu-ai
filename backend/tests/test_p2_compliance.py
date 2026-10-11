@@ -8,12 +8,13 @@ from sqlalchemy import select, text, update
 from app.compliance import sanctions as sanc
 from app.compliance.unsubscribe import make_token
 from app.compliance.verify import MockVerifier, set_mx_resolver, set_verifier, verify_email
+from app.core.config import get_settings
 from app.core.db import SessionLocal, bypass_tenant, engine, utcnow
 from app.models import AuditLog, SanctionListVersion
 from tests.conftest import add_user, register
 
 P = "/api/v1"
-PT = {"X-Platform-Admin-Token": "test-platform-token"}
+PT = {"X-Platform-Admin-Token": get_settings().platform_admin_token}
 
 
 def mk_contact(client, h, email, country=None, company_country="US", name="Bob Buyer", company="Acme Valves"):
@@ -41,8 +42,13 @@ def db():
     s.close()
 
 
-def test_pipeline_local_steps_and_cache(db, monkeypatch):
+def test_pipeline_local_steps_and_cache(db, monkeypatch, client):
+    from app.agent import credits
     from app.core.config import get_settings
+    auth = register(client, "pipeline@audit.example.com")
+    db.info["tenant_id"] = uuid.UUID(client.get(f"{P}/auth/me", headers=auth).json()["tenant"]["id"])
+    credits.grant(db, 10, note="Synthetic provider pipeline test")
+    db.commit()
     monkeypatch.setattr(get_settings(), "verify_check_mx", True)
     mv = MockVerifier()
     set_verifier(mv)
@@ -63,7 +69,9 @@ def test_pipeline_local_steps_and_cache(db, monkeypatch):
 
 
 def test_batch_verify_job_and_statuses(client):
+    from tests.test_p5 import topup
     h = register(client, "v@a.com")
+    topup(client, h, 10)
     ids = [mk_contact(client, h, e)[0] for e in ["ok@good.com", "invalid.person@good.com", "z@catchall-x.com", "unknown1@good.com"]]
     r = client.post(f"{P}/contacts:verify", headers=h, json={})
     assert r.status_code == 202, r.text
@@ -179,8 +187,10 @@ def test_region_rules_evaluate(client):
 
 
 def test_gate_blocks_and_passes(client):
+    from tests.test_p5 import topup
     set_verifier(MockVerifier())
     h = register(client, "g@a.com")
+    topup(client, h, 10)
     fr, _ = mk_contact(client, h, "jean@fr-buyer.fr", country="FR", company_country="FR")
     client.post(f"{P}/contacts/{fr}:verify", headers=h)
     res = client.get(f"{P}/contacts/{fr}/compliance-check", headers=h).json()

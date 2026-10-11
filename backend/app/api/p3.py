@@ -816,6 +816,8 @@ def list_enrollments(sid: uuid.UUID, page: int = Query(1, ge=1), size: int = Que
 @router.post("/enrollments/{eid}:{action}", tags=["sequences"])
 def enrollment_action(eid: uuid.UUID, action: str, request: Request, cu: CurrentUser = Depends(require("sequence.manage")),
                       db: Session = Depends(get_db)):
+    from app.outreach.intents import lock_tenant
+    lock_tenant(db)
     e = db.scalar(select(Enrollment).where(Enrollment.id == eid, Enrollment.deleted_at.is_(None)).with_for_update())
     if not e:
         raise AppError("COMMON_NOT_FOUND")

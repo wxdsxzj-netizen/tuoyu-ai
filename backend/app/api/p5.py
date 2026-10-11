@@ -220,6 +220,7 @@ def _task(db, cu, tid) -> AgentTask:
 
 
 class TaskIn(BaseModel):
+    request_id: uuid.UUID
     text: str = Field(min_length=5, max_length=1000)
     autonomy: str = "L1"
     budget: float | None = Field(None, ge=0)
@@ -227,7 +228,12 @@ class TaskIn(BaseModel):
 
 @router.post("/agent/tasks", status_code=201, tags=["agent"])
 def create_task(body: TaskIn, request: Request, cu: CurrentUser = Depends(require("agent.run")), db: Session = Depends(get_db)):
+    from app.core.submission import existing
+    old, digest = existing(db, AgentTask, cu.id, body.request_id, body.model_dump(exclude={"request_id"}))
+    if old:
+        return task_out(db, old)
     t = agent.create(db, cu.user, body.text, body.autonomy, body.budget)
+    t.request_id, t.request_hash = body.request_id, digest
     audit(db, cu, request, "agent.task.create", "agent_task", t.id, mode=t.mode, status=t.status, intent=t.intent)
     db.commit()
     return task_out(db, t)
@@ -260,6 +266,7 @@ class DecideIn(BaseModel):
 @router.post("/agent/tasks/{tid}:{action}", tags=["agent"])
 def task_action(tid: uuid.UUID, action: str, request: Request, body: dict | None = None,
                 cu: CurrentUser = Depends(require("agent.run")), db: Session = Depends(get_db)):
+    credits.lock_wallet(db)
     t = _task(db, cu, tid)
     body = body or {}
     res = None

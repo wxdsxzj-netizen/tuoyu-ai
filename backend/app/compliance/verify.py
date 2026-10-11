@@ -199,7 +199,7 @@ def has_mx(domain: str) -> bool | None:
         return None
 
 
-def verify_email(db: Session, email: str, *, force: bool = False) -> VerifyResult:
+def verify_email(db: Session, email: str, *, force: bool = False, actor_id=None, task_id=None, held=False, object_id=None) -> VerifyResult:
     s = get_settings()
     raw_email = (email or "").strip()
     if not EMAIL_RE.match(raw_email):
@@ -207,6 +207,8 @@ def verify_email(db: Session, email: str, *, force: bool = False) -> VerifyResul
     norm = normalize_email(raw_email)
     local, dom = raw_email.lower().split("@", 1)
     is_role, is_free = local in ROLE, dom in FREE
+    from app.agent import credits
+    credits.lock_wallet(db)  # Recheck shared cache after a competing verification commits.
     with bypass_tenant():
         if not force:
             cached = db.scalar(select(EmailVerification).where(
@@ -216,7 +218,8 @@ def verify_email(db: Session, email: str, *, force: bool = False) -> VerifyResul
             if cached:
                 return VerifyResult(cached.status, list(cached.reason_codes), cached.provider, cached.is_role,
                                     cached.is_disposable, cached.is_free, cached.raw or {}, cached=True)
-    res = _pipeline(db, raw_email, dom, is_role, is_free, s)
+    res = _pipeline(db, raw_email, dom, is_role, is_free, s,
+                    {"actor_id": actor_id, "task_id": task_id, "held": held, "object_type": "contact", "object_id": object_id})
     res.is_role = res.is_role or is_role
     res.is_free = res.is_free or is_free
     if res.is_role and "ROLE" not in res.reason_codes:
@@ -228,7 +231,7 @@ def verify_email(db: Session, email: str, *, force: bool = False) -> VerifyResul
     return res
 
 
-def _pipeline(db, email, dom, is_role, is_free, s) -> VerifyResult:
+def _pipeline(db, email, dom, is_role, is_free, s, billing) -> VerifyResult:
     from app.compliance.suppression import is_globally_bounced
     if dom in DISPOSABLE:
         return VerifyResult("risky", ["DISPOSABLE"], is_disposable=True)
@@ -238,13 +241,17 @@ def _pipeline(db, email, dom, is_role, is_free, s) -> VerifyResult:
         mx = has_mx(dom)
         if mx is False:
             return VerifyResult("invalid", ["NO_MX"])
+    from app.agent import credits
+    credits.authorize(db, "EMAIL_VERIFY", 1, actor_id=billing["actor_id"], task_id=billing["task_id"], held=billing["held"])
     try:
-        return get_verifier().verify(email)
+        result = get_verifier().verify(email)
     except AppError as e:
         if e.code in ("DATA_PROVIDER_QUOTA_EXCEEDED", "DATA_PROVIDER_AUTH_FAILED"):
             raise
         # 依赖不可用：结果为“未知”且不扣费（M5-01）
-        return VerifyResult("unknown", ["PROVIDER_UNAVAILABLE"], provider="none")
+        result = VerifyResult("unknown", ["PROVIDER_UNAVAILABLE"], provider="none")
+    credits.consume(db, "EMAIL_VERIFY", 1, result="failed" if result.status == "unknown" else "success", **billing)
+    return result
 
 
 def apply_to_contact(contact, res: VerifyResult):

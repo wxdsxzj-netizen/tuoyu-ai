@@ -86,6 +86,9 @@ def generate(db: Session, company: Company, *, user_id=None, force=False, task_i
     if last and not force and last.expires_at > now:
         credits.consume(db, "RESEARCH", 1, task_id=task_id, held=held, object_type="company", object_id=company.id, result="cached", actor_id=user_id)  # noqa: E501
         return last, True
+    action = "RESEARCH_REFRESH" if last else "RESEARCH"
+    credits.PRICES.setdefault("RESEARCH_REFRESH", 1.0)
+    credits.authorize(db, action, 1, actor_id=user_id, task_id=task_id, held=held)
     ev: list[dict] = []
 
     def add(kind, title, snippet, url=None):
@@ -208,8 +211,6 @@ def generate(db: Session, company: Company, *, user_id=None, force=False, task_i
     rep = ResearchReport(company_id=company.id, version=(last.version + 1) if last else 1, status=status, sections=sections, evidence=ev,
                          risks=risks, fit_score=fs, model="rules+mock", robots_skipped=skipped, expires_at=now + timedelta(days=CACHE_DAYS),
                          task_id=task_id, created_by=user_id)
-    action = "RESEARCH_REFRESH" if last else "RESEARCH"
-    credits.PRICES.setdefault("RESEARCH_REFRESH", 1.0)
     charged = credits.consume(db, action, 1, task_id=task_id, held=held, object_type="company", object_id=company.id,
                               result="success" if status == "ok" else "failed", actor_id=user_id)
     rep.credits_charged = charged

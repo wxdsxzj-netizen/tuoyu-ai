@@ -226,30 +226,20 @@ def waterfall_for(field: str, country: str | None) -> list[str]:
 
 def enrich_waterfall(db: Session, company: Company, *, titles: list[str] | None = None, limit: int = 5, user_id=None) -> dict:
     """按字段瀑布补全：依次尝试数据源，写入联系人并记录血缘；邮箱等敏感字段过期才重拉。"""
-    from app.data.providers import build_provider, get_settings
-    if not company.domain:
-        raise AppError("COMMON_INVALID_STATE", details={"reason": "公司缺少域名"})
-    s = get_settings()
-    providers = waterfall_for("email", company.country)
-    tried, people, used = [], [], None
-    for name in providers:
-        tried.append(name)
-        try:
-            p = build_provider(name if name != "hunter" or s.hunter_api_key else "mock", s)
-            if name == "hunter" and not s.hunter_api_key:
-                p = build_provider("mock", s)
-                name = "mock"
-            got = p.search_people(domain=company.domain, titles=titles, limit=limit)
-            if got:
-                people, used = got, name
-                break
-        except Exception:  # noqa: BLE001
-            continue
+    from app.data.enrichment import lookup, settle
+    from app.data.normalize import normalize_email
+    result = lookup(db, company, titles=titles, limit=limit, actor_id=user_id, waterfall=True)
+    tried, people, used = result.tried, result.people, result.provider
+    if result.cached:
+        settle(db, result, result.cached, actor_id=user_id)
+        return {"tried": tried, "provider": used, "created": 0, "merged": len(result.cached), "cached": True, "credits": 0}
     created = merged = 0
+    contacts = []
     now = utcnow()
     for person in people:
         meta = {f: _prov(used, person.email_confidence or 0.6, f, now) for f in ("full_name", "title", "email", "phone", "linkedin_url") if getattr(person, f if f != "full_name" else "full_name", None)}  # noqa: E501
-        existing = db.scalar(select(Contact).where(Contact.email == person.email)) if person.email else None
+        existing = db.scalar(select(Contact).where(func.lower(Contact.email) == person.email.lower(),
+                            Contact.deleted_at.is_(None))) if person.email else None
         if existing:
             # 新鲜度：未过期不覆盖
             fm = existing.field_meta or {}
@@ -271,12 +261,16 @@ def enrich_waterfall(db: Session, company: Company, *, titles: list[str] | None 
             existing.field_meta = fm
             existing.source_fetched_at = now
             merged += 1
+            contacts.append(existing)
         else:
             c = Contact(full_name=person.full_name, title=person.title, department=person.department, seniority=person.seniority,
-                        email=person.email, email_confidence=person.email_confidence, phone=person.phone,
+                        email=person.email, email_normalized=normalize_email(person.email),
+                        email_confidence=person.email_confidence, phone=person.phone,
                         linkedin_url=person.linkedin_url, country=person.country or company.country, company_id=company.id,
                         source=used or "waterfall", field_meta=meta, source_fetched_at=now)
             db.add(c)
+            db.flush()
+            contacts.append(c)
             created += 1
             # 同步公共库
             gc = upsert_global_company(db, name=company.name, domain=company.domain, country=company.country,
@@ -286,7 +280,8 @@ def enrich_waterfall(db: Session, company: Company, *, titles: list[str] | None 
                                   confidence=person.email_confidence or 0.6, title=person.title, seniority=person.seniority,
                                   phone=person.phone, linkedin_url=person.linkedin_url, country=person.country or company.country)
     db.flush()
-    return {"tried": tried, "provider": used, "created": created, "merged": merged}
+    billed = settle(db, result, contacts, actor_id=user_id)
+    return {"tried": tried, "provider": used, "created": created, "merged": merged, "credits": billed, "cached": False}
 
 
 CORRECTION_FIELDS = {

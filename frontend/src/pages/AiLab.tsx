@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card, Descriptions, Form, Input, InputNumber, List, Modal, Select, Space, Switch, Table, Tabs, Tag, Upload, message } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
@@ -56,9 +56,27 @@ function Learning() {
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7))
   const load = () => api.get('/learning').then(x => setList(x.data))
   useEffect(() => { load(); api.get('/icps').then(x => setIcps(x.data)) }, [])
-  const apply = (lid: string, sid: string) => Modal.confirm({ title: t('b5.applyTitle'), content: <Select id="icpSel" style={{ width: '100%' }} options={icps.map(i => ({ value: i.id, label: i.name }))} onChange={v => ((window as any).__icp = v)} />,
-    onOk: () => api.post(`/learning/${lid}:apply`, { suggestion_id: sid, icp_id: (window as any).__icp }).then(() => { message.success(t('b5.applied')); load() }) })
+  const [target, setTarget] = useState<{ lid: string; sid: string }>()
+  const [icp, setIcp] = useState<string>()
+  const [applying, setApplying] = useState(false)
+  const pending = useRef(false)
+  const apply = (lid: string, sid: string) => { setIcp(undefined); setTarget({ lid, sid }) }
+  const submit = async () => {
+    if (!target || !icp || pending.current) return
+    pending.current = true; setApplying(true)
+    try {
+      await api.post(`/learning/${target.lid}:apply`, { suggestion_id: target.sid, icp_id: icp })
+      setTarget(undefined); setIcp(undefined); message.success(t('b5.applied')); load()
+    } catch { /* Preserve the selected target; the API client reports the failure. */ }
+    finally { pending.current = false; setApplying(false) }
+  }
   return <>
+    <Modal open={!!target} title={t('b5.applyTitle')} onOk={submit} confirmLoading={applying} okButtonProps={{ disabled: !icp }}
+      cancelButtonProps={{ disabled: applying }} closable={!applying} maskClosable={!applying}
+      onCancel={() => { if (!pending.current) { setTarget(undefined); setIcp(undefined) } }} destroyOnHidden>
+      <Select aria-label={t('b5.applyTitle')} style={{ width: '100%' }} value={icp} disabled={applying}
+        options={icps.map(i => ({ value: i.id, label: i.name }))} onChange={setIcp} />
+    </Modal>
     <Space style={{ marginBottom: 12 }}><Input value={period} onChange={e => setPeriod(e.target.value)} style={{ width: 120 }} />
       <Button onClick={() => api.post('/reviews/monthly', { period }).then(load)}>{t('b5.genMonthly')}</Button>
       <Button type="primary" onClick={() => api.post('/learning:run', { days: 90, min_n: 20 }).then(load)}>{t('b5.runLearning')}</Button></Space>

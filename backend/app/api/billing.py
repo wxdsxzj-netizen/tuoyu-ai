@@ -158,8 +158,13 @@ def summary(cu: CurrentUser = Depends(require("billing.read")), db: Session = De
     held = credits.outstanding(db)
     granted = db.scalar(select(func.coalesce(func.sum(CreditEntry.credits), 0)).where(CreditEntry.entry_type.in_(("grant", "correction")))) or 0  # noqa: E501
     unpaid = db.scalar(select(func.count()).select_from(Invoice).where(Invoice.status == "issued")) or 0
+    from app.b4.billing import subscription
+    sub = subscription(db)
+    overdue = bool(sub and sub.status in ("active", "trial", "past_due") and sub.period_end < utcnow().date())
+    settlement = {"period": sub.period_start.strftime("%Y-%m"), "blocked": held > 0, "reserved": held} if overdue else None
     return {"balance": bal, "held": round(held, 2), "granted_total": round(granted, 2), "used_this_month": round(float(used), 2),
             "used_by_action": {k: round(float(v), 2) for k, v in by_action.items()}, "unpaid_invoices": unpaid,
+            "settlement": settlement,
             "prices": credits.PRICES, "price_version": credits.PRICE_VERSION, "low_balance": bal < max(10.0, granted * 0.1)}
 
 

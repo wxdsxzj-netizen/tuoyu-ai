@@ -1,7 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tabs, Tag, Upload, message } from 'antd'
 import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth'
 
@@ -33,14 +34,53 @@ function Samples() {
   </>
 }
 
-function Orders() {
+export function Orders() {
   const { t } = useTranslation()
+  const { me } = useAuth()
   const [rows, setRows] = useState<any[]>([])
   const [pay, setPay] = useState<any>()
   const [amt, setAmt] = useState<number>()
+  const [reference, setReference] = useState('')
+  const [paying, setPaying] = useState(false)
+  const [uncertain, setUncertain] = useState(false)
+  const busy = useRef(false)
+  const intent = useRef<{ request_id: string; amount_minor: number; ref: string | null }>()
+  const storageKey = (id: string) => `tl-payment:${me?.tenant.id}:${me?.user.id}:${id}`
+  const openPayment = (row: any) => {
+    const saved = sessionStorage.getItem(storageKey(row.id))
+    let pending: typeof intent.current
+    try { pending = saved ? JSON.parse(saved) : undefined } catch { pending = undefined }
+    if (pending && row.payments?.some((p: any) => p.request_id === pending?.request_id || p.request_ids?.includes(pending?.request_id))) {
+      sessionStorage.removeItem(storageKey(row.id)); pending = undefined
+    }
+    intent.current = pending
+    setAmt(pending ? pending.amount_minor / 100 : undefined)
+    setReference(pending?.ref || '')
+    setUncertain(!!pending)
+    setPay(row)
+  }
   const load = () => { api.get('/orders').then(r => setRows(r.data)) }
   useEffect(load, [])
   const status = async (r: any, s: string) => { await api.post(`/orders/${r.id}:status`, { status: s }); load() }
+  const submitPayment = async () => {
+    if (busy.current || !pay || !amt || amt <= 0) return
+    busy.current = true; setPaying(true)
+    try {
+      const payload = intent.current || { request_id: crypto.randomUUID(), amount_minor: Math.round(amt * 100), ref: reference.trim() || null }
+      // Save before sending so a timeout, modal close or page reload reuses the same receipt identity.
+      sessionStorage.setItem(storageKey(pay.id), JSON.stringify(payload))
+      intent.current = payload
+      await api.post(`/orders/${pay.id}/payments`, payload)
+      sessionStorage.removeItem(storageKey(pay.id)); intent.current = undefined
+      setUncertain(false); setPay(undefined); setAmt(undefined); setReference(''); load()
+    } catch (error: any) {
+      const code = error?.response?.status
+      if (!uncertain && [400, 403, 404, 409, 422].includes(code)) {
+        sessionStorage.removeItem(storageKey(pay.id)); intent.current = undefined
+      } else setUncertain(true)
+      // The API interceptor shows the failure; keep this intent for a safe retry.
+    } finally { busy.current = false; setPaying(false) }
+  }
   return <>
     <Table rowKey="id" size="small" dataSource={rows} columns={[
       { title: t('b2.orderNo'), dataIndex: 'order_no' }, { title: t('b2.total'), render: (_: any, r: any) => money(r.total_minor, r.currency) },
@@ -48,15 +88,21 @@ function Orders() {
       { title: t('b2.status'), dataIndex: 'status', render: v => <Tag>{t('b2.os_' + v)}</Tag> },
       { title: t('b2.overdue'), dataIndex: 'overdue', render: v => v?.length ? <Tag color="red">{money(v[v.length - 1].short_minor)}</Tag> : '—' },
       { title: '', render: (_: any, r: any) => <>
-        <Button size="small" onClick={() => setPay(r)}>{t('b2.addPayment')}</Button>
+        <Button size="small" onClick={() => openPayment(r)}>{t('b2.addPayment')}</Button>
         {r.status === 'confirmed' && <Button size="small" type="link" onClick={() => status(r, 'producing')}>{t('b2.os_producing')}</Button>}
         {r.status === 'producing' && <Button size="small" type="link" onClick={() => status(r, 'shipped')}>{t('b2.os_shipped')}</Button>}
         {r.status === 'shipped' && r.paid_minor >= r.total_minor && <Button size="small" type="link" onClick={() => status(r, 'completed')}>{t('b2.os_completed')}</Button>}
       </> },
     ]} />
-    <Modal open={!!pay} title={t('b2.addPayment')} onCancel={() => setPay(undefined)} onOk={async () => {
-      await api.post(`/orders/${pay.id}/payments`, { amount_minor: Math.round((amt || 0) * 100) }); setPay(undefined); load()
-    }}><InputNumber min={0} style={{ width: 200 }} value={amt} onChange={v => setAmt(v ?? undefined)} addonAfter={pay?.currency} /></Modal>
+    <Modal open={!!pay} title={t('b2.addPayment')} confirmLoading={paying} okButtonProps={{ disabled: !amt || amt <= 0 }}
+      cancelButtonProps={{ disabled: paying }} closable={!paying} maskClosable={!paying}
+      onCancel={() => { if (!busy.current) setPay(undefined) }} onOk={submitPayment}>
+      {uncertain && <Alert type="warning" showIcon message="上次收款登记结果待确认，请重试原请求或查看订单记录。" style={{ marginBottom: 12 }} />}
+      <Space direction="vertical">
+        <Space><InputNumber min={0.01} precision={2} style={{ width: 200 }} disabled={paying || uncertain} value={amt} onChange={v => setAmt(v ?? undefined)} /><span>{pay?.currency}</span></Space>
+        <Input placeholder="银行收款参考号（可选）" maxLength={128} disabled={paying || uncertain} value={reference} onChange={e => setReference(e.target.value)} />
+      </Space>
+    </Modal>
   </>
 }
 
@@ -165,7 +211,10 @@ function AccountImport() {
 export default function CrmPlusPage() {
   const { t } = useTranslation()
   const { can } = useAuth()
-  return <Tabs items={[
+  const [params, setParams] = useSearchParams()
+  const tab = params.get('tab') || 's'
+  const active = tab === 'orders' ? 'o' : ['s', 'o', 'i', 'c'].includes(tab) ? tab : 's'
+  return <Tabs activeKey={active} onChange={key => setParams(previous => { const next = new URLSearchParams(previous); next.set('tab', key); return next })} items={[
     { key: 's', label: t('b2.samples'), children: <Samples /> },
     { key: 'o', label: t('b2.orders'), children: <Orders /> },
     { key: 'i', label: t('b2.accImport'), children: <AccountImport /> },

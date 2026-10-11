@@ -1,3 +1,4 @@
+import secrets
 import uuid
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -213,10 +214,13 @@ def test_warmup_ramp_and_limits():
     assert health.health_score({"complaint_rate": 0.001, "hard_bounce_rate": 0.05, "reply_rate": 0}) == 35
 
 
+SMTP_TEST_PASSWORD = secrets.token_urlsafe(24)
+
+
 def _bind(client, h, sink_port, addr="sales@nbvalve.com", **kw):
     r = client.post(f"{P}/mailboxes", headers=h, json={"address": addr, "display_name": "Lily Chen", "smtp_host": "127.0.0.1",
                                                        "smtp_port": sink_port, "smtp_security": "none", "smtp_username": None,
-                                                       "smtp_password": "s3cret-pass", **kw})
+                                                       "smtp_password": SMTP_TEST_PASSWORD, **kw})
     return r
 
 
@@ -225,19 +229,19 @@ def test_mailbox_binding_security_and_breaker(client):
     dns_check.set_resolver(good_dns())
     with Sink() as sink:
         r = client.post(f"{P}/mailboxes", headers=h, json={"address": "x@nbvalve.com", "smtp_host": "smtp.gmail.com", "smtp_port": 587,
-                                                           "smtp_password": "p"})
+                                                           "smtp_password": secrets.token_urlsafe(24)})
         assert r.json()["error"]["code"] == "DELIVERY_SMTP_HOST_NOT_ALLOWED"  # 绝不外发
         r = _bind(client, h, sink.port)
         assert r.status_code == 201, r.text
         body = r.json()
         mb = body["mailbox"]
         assert body["smtp_test"]["ok"] and body["domain"]["dns_ok"] and mb["status"] == "warming" and mb["today_limit"] == 5
-        assert "s3cret" not in r.text and mb["has_smtp_password"]
+        assert SMTP_TEST_PASSWORD not in r.text and mb["has_smtp_password"]
         with engine.begin() as c:
             enc = c.execute(text("select smtp_password_enc from mailboxes")).scalar()
-        assert enc and "s3cret" not in enc
+        assert enc and SMTP_TEST_PASSWORD not in enc
         from app.outreach.crypto import decrypt
-        assert decrypt(enc) == "s3cret-pass"
+        assert decrypt(enc) == SMTP_TEST_PASSWORD
         assert _bind(client, h, sink.port).json()["error"]["code"] == "DELIVERY_MAILBOX_TAKEN"
         h2 = register(client, "o@b.com", tenant="公司B")
         assert _bind(client, h2, sink.port).json()["error"]["code"] == "DELIVERY_MAILBOX_TAKEN"  # 全平台唯一
@@ -519,7 +523,9 @@ def test_reply_categories_ooo_unsub_and_imap(client):
 
 
 def test_step_edit_requires_reapproval_and_quota(client):
+    from tests.test_p5 import topup
     h = register(client, "o@a.com")
+    topup(client, h, 10)  # Enrollment performs a paid email verification.
     _, ah = add_user(client, h, "admin@a.com", "admin")
     with Sink() as sink:
         mb = setup_outreach(client, sink, h)

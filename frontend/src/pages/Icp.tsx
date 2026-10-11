@@ -19,7 +19,11 @@ export default function IcpPage() {
   useEffect(() => { load() }, [load])
   const generate = async () => { const r = await api.post('/icps:generate'); message.success(`+${r.data.length}`); load() }
   const act = async (i: Icp, a: string) => { await api.post(`/icps/${i.id}:${a}`); load() }
-  const open = (i: Icp | 'new') => { setEditing(i); form.setFieldsValue(i === 'new' ? { name: '', description: '' } : i) }
+  const open = (i: Icp | 'new') => {
+    form.resetFields()
+    form.setFieldsValue(i === 'new' ? { name: '', description: '', ...Object.fromEntries(LIST_FIELDS.map(f => [f, []])) } : i)
+    setEditing(i)
+  }
   const save = async () => {
     const v = await form.validateFields()
     if (editing === 'new') await api.post('/icps', v)

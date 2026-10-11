@@ -741,7 +741,9 @@ class OrderMove(BaseModel):
 
 @router.post("/orders/{oid}:status", tags=["orders"])
 def order_status(oid: uuid.UUID, body: OrderMove, request: Request, cu: CurrentUser = Depends(require("order.manage")), db: Session = Depends(get_db)):  # noqa: E501
+    from app.agent.credits import lock_wallet
     from app.core.db import utcnow
+    lock_wallet(db)
     o = _get(db, SalesOrder, oid)
     _acc(db, o.account_id, cu, write=True)
     if o.status in ("completed", "cancelled"):
@@ -757,16 +759,19 @@ def order_status(oid: uuid.UUID, body: OrderMove, request: Request, cu: CurrentU
 
 
 class PayIn(BaseModel):
+    request_id: uuid.UUID
     amount_minor: int = Field(gt=0)
     ref: str | None = Field(None, max_length=128)
 
 
 @router.post("/orders/{oid}/payments", tags=["orders"])
 def add_payment(oid: uuid.UUID, body: PayIn, request: Request, cu: CurrentUser = Depends(require("order.manage")), db: Session = Depends(get_db)):  # noqa: E501
+    from app.agent.credits import lock_wallet
+    lock_wallet(db)
     o = _get(db, SalesOrder, oid)
     _acc(db, o.account_id, cu, write=True)
-    crm2.add_payment(o, body.amount_minor, body.ref)
-    audit(db, cu, request, "order.payment", "order", o.id, body.model_dump())
+    if crm2.add_payment(db, o, body.amount_minor, body.ref, body.request_id):
+        audit(db, cu, request, "order.payment", "order", o.id, body.model_dump(mode="json"))
     db.commit()
     return _o_out(o)
 

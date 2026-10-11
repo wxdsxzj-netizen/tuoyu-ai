@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Badge, Button, Card, Col, Empty, Input, List, Radio, Row, Select, Space, Tag, Typography, message } from 'antd'
 import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth'
 
@@ -10,6 +11,8 @@ const CAT_COLOR: Record<string, string> = { inquiry: 'green', positive: 'green',
 export default function InboxPage() {
   const { t } = useTranslation()
   const { can } = useAuth()
+  const [params, setParams] = useSearchParams()
+  const selectedId = params.get('c')
   const [status, setStatus] = useState<string>()
   const [rows, setRows] = useState<any[]>([])
   const [cur, setCur] = useState<string>()
@@ -20,6 +23,7 @@ export default function InboxPage() {
   const [bilingual, setBilingual] = useState<string | null>(null)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [openError, setOpenError] = useState<string>()
   const generation = useRef(0)
   const draftVersion = useRef(0)
   const inflight = useRef(false)
@@ -35,13 +39,19 @@ export default function InboxPage() {
     const requestGeneration = ++generation.current
     draftVersion.current += 1
     inflight.current = false
-    setCur(id); setDetail(undefined); setSug(undefined); setCheck(undefined); setDraft(''); setBilingual(null); setNote(''); setBusy(false)
+    setCur(id); setDetail(undefined); setSug(undefined); setCheck(undefined); setDraft(''); setBilingual(null); setNote(''); setBusy(false); setOpenError(undefined)
     try {
       const r = await api.get(`/conversations/${id}`)
       if (generation.current === requestGeneration && r.data.conversation.id === id) setDetail(r.data)
-    } catch { /* The API client displays the error; the stale conversation stays hidden. */ }
+    } catch (error: any) {
+      if (generation.current === requestGeneration) setOpenError([403, 404].includes(error.response?.status) ? '会话不存在或无权查看。' : '会话加载失败，请重试。')
+    }
   }, [])
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    if (selectedId) open(selectedId)
+    else { generation.current++; setCur(undefined); setDetail(undefined); setOpenError(undefined) }
+  }, [selectedId, open])
   useEffect(() => () => { generation.current += 1 }, [])
 
   const c = detail?.conversation.id === cur ? detail?.conversation : undefined
@@ -104,7 +114,7 @@ export default function InboxPage() {
         <Card size="small" title={t('p4.inbox')} extra={<Radio.Group size="small" value={status ?? ''} onChange={(e) => setStatus(e.target.value || undefined)}
           options={[{ value: '', label: t('p4.all') }, { value: 'unread', label: t('p4.cs_unread') }, { value: 'pending', label: t('p4.cs_pending') }, { value: 'closed', label: t('p4.cs_closed') }]} optionType="button" />}>
           <List size="small" dataSource={rows} locale={{ emptyText: <Empty description={t('p4.noConv')} /> }} renderItem={(r: any) => (
-            <List.Item onClick={() => open(r.id)} style={{ cursor: 'pointer', background: r.id === cur ? '#e6f4ff' : undefined, paddingLeft: 8 }}>
+            <List.Item onClick={() => setParams(previous => { const next = new URLSearchParams(previous); next.set('c', r.id); return next })} style={{ cursor: 'pointer', background: r.id === cur ? '#e6f4ff' : undefined, paddingLeft: 8 }}>
               <List.Item.Meta
                 title={<Space>{r.status === 'unread' && <Badge status="processing" />}<span>{r.peer_email}</span></Space>}
                 description={<Space wrap size={4}><Typography.Text ellipsis style={{ maxWidth: 180 }}>{r.subject}</Typography.Text>
@@ -114,7 +124,7 @@ export default function InboxPage() {
         </Card>
       </Col>
       <Col span={16}>
-        {!c ? <Empty description={t('p4.pickConv')} /> : (
+        {!c ? openError ? <Alert type="error" showIcon message={openError} action={<Button onClick={() => cur && open(cur)}>重试</Button>} /> : <Empty description={t('p4.pickConv')} /> : (
           <Card size="small" title={<Space>{c.peer_email}<Tag>{t(`p4.cs_${c.status}`)}</Tag>{detail.account && <Tag color="blue">{detail.account.name}</Tag>}
             {detail.handoff && <Tag color="green">{t('p4.handoff')}·{t(`p4.hs_${detail.handoff.status}`)}</Tag>}</Space>}
             extra={<Space><Button size="small" disabled={busy} onClick={() => mutateConversation((id) => api.post(`/conversations/${id}:translate`))}>{t('p4.translate')}</Button>

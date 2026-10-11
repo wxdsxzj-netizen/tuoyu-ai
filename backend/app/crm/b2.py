@@ -370,13 +370,35 @@ def check_party(db: Session, acc: Account):
         raise AppError("CRM_SANCTION_BLOCKED")
 
 
-def add_payment(o: SalesOrder, amount_minor: int, ref: str | None, at: datetime | None = None):
+def add_payment(db: Session, o: SalesOrder, amount_minor: int, ref: str | None, request_id, at: datetime | None = None) -> bool:
+    from app.agent.credits import lock_wallet
+    lock_wallet(db)
+    o = db.scalar(select(SalesOrder).where(SalesOrder.id == o.id, SalesOrder.deleted_at.is_(None))
+                  .with_for_update().execution_options(populate_existing=True))
+    if o is None:
+        raise AppError("COMMON_NOT_FOUND")
+    ref = ref.strip() if ref else None
+    ref = ref or None
+    for payment in o.payments or []:
+        same_intent = payment.get("request_id") == str(request_id) or str(request_id) in payment.get("request_ids", [])
+        same_reference = ref and payment.get("ref") == ref
+        if same_intent or same_reference:
+            if payment["amount_minor"] != amount_minor or (same_intent and payment.get("ref") != ref):
+                raise AppError("COMMON_IDEMPOTENCY_MISMATCH")
+            if not same_intent:
+                o.payments = [{**p, "request_ids": p.get("request_ids", []) + [str(request_id)]} if p is payment else p
+                              for p in o.payments]
+            return False
+    if o.status in ("cancelled", "completed"):
+        raise AppError("COMMON_INVALID_STATE")
     if amount_minor <= 0 or o.paid_minor + amount_minor > o.total_minor:
         raise AppError("CRM_PAYMENT_INVALID")
-    o.payments = (o.payments or []) + [{"at": (at or utcnow()).isoformat(), "amount_minor": amount_minor, "ref": ref}]
+    o.payments = (o.payments or []) + [{"at": (at or utcnow()).isoformat(), "amount_minor": amount_minor,
+                                      "ref": ref, "request_id": str(request_id)}]
     o.paid_minor += amount_minor
     if o.paid_minor >= o.total_minor and o.status == "shipped":
         o.status = "completed"
+    return True
 
 
 def overdue_payments(o: SalesOrder, today: date | None = None) -> list[dict]:

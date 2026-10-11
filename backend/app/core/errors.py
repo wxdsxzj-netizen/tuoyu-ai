@@ -126,6 +126,8 @@ ERROR_CODES: dict[str, tuple[int, str, str, bool]] = {
     "BILLING_PLAN_NOT_FOUND": (404, "套餐不存在或已下架", "Plan not found", False),
     "BILLING_SEATS_EXCEEDED": (409, "席位已满，请先增加席位或停用成员", "No seats available", False),
     "BILLING_BUDGET_EXCEEDED": (402, "超出本月预算", "Budget exceeded", False),
+    "BILLING_MONTH_CLOSE_PENDING": (409, "跨月预占尚未结清，请先完成或取消原任务，再补跑月结",
+                                    "Finish or cancel reserved tasks before month close and new paid work", False),
     "BILLING_PAYMENT_UNAVAILABLE": (503, "在线支付未开通（需商户资质），请线下付款", "Online payment unavailable", False),
     "BILLING_NOTICE_TOO_SOON": (400, "调价须至少提前 30 天通知", "Price change needs 30 days notice", False),
     "WIDGET_NOT_FOUND": (404, "组件不存在或已停用", "Widget not found", False),

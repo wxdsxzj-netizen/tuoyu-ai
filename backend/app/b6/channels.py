@@ -7,7 +7,7 @@ import re
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -75,20 +75,42 @@ def ensure_optin(db: Session, phone: str) -> WhatsAppOptIn:
     return o
 
 
-def window_open(db: Session, phone: str) -> bool:
-    last_in = db.scalar(select(WhatsAppMessage).where(WhatsAppMessage.phone == phone, WhatsAppMessage.direction == "in")
-                        .order_by(WhatsAppMessage.created_at.desc()).limit(1))
+def window_open(db: Session, phone: str, account_id=None) -> bool:
+    query = select(WhatsAppMessage).where(WhatsAppMessage.phone == phone, WhatsAppMessage.direction == "in")
+    if account_id is not None:
+        query = query.where(WhatsAppMessage.account_id == account_id)
+    last_in = db.scalar(query.order_by(WhatsAppMessage.created_at.desc()).limit(1))
     return bool(last_in and last_in.created_at >= utcnow() - timedelta(hours=24))
+
+
+def sent_today(db: Session, account_id, now=None) -> int:
+    """UTC attempts with a sent/unknown result; deleting a row must not reset quota."""
+    now = now or utcnow()
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return db.scalar(select(func.count()).select_from(WhatsAppMessage).where(
+        WhatsAppMessage.account_id == account_id, WhatsAppMessage.direction == "out",
+        WhatsAppMessage.status != "failed", WhatsAppMessage.created_at >= day,
+        WhatsAppMessage.created_at < day + timedelta(days=1))) or 0
 
 
 def send_whatsapp(db: Session, account: WhatsAppAccount, *, phone: str, body: str, template: WhatsAppTemplate | None = None,
                   contact_id=None) -> WhatsAppMessage:
+    account = db.scalar(select(WhatsAppAccount).where(WhatsAppAccount.id == account.id, WhatsAppAccount.deleted_at.is_(None))
+                        .with_for_update().execution_options(populate_existing=True))
+    if account is None or account.status not in ("active", "mock"):
+        raise AppError("COMMON_INVALID_STATE")
+    if template is not None and (template.account_id != account.id or template.status != "approved" or template.deleted_at):
+        raise AppError("COMMON_VALIDATION", details={"template": "需要当前账号已审批模板"})
+    if contact_id and not db.scalar(select(Contact.id).where(Contact.id == contact_id, Contact.deleted_at.is_(None))):
+        raise AppError("COMMON_NOT_FOUND")
+    now = utcnow()
     ensure_optin(db, phone)
+    account.sent_today = sent_today(db, account.id, now)
     if account.sent_today >= account.daily_limit:
         raise AppError("WA_DAILY_LIMIT")
     kind = "template"
     if template is None:
-        if not window_open(db, phone):
+        if not window_open(db, phone, account.id):
             raise AppError("WA_WINDOW_CLOSED", details={"hint": "24 小时会话窗外只能发已审批模板"})
         kind = "session"
     client = WhatsAppClient(account)
@@ -103,7 +125,7 @@ def send_whatsapp(db: Session, account: WhatsAppAccount, *, phone: str, body: st
         db.add(m)
         db.flush()
         raise
-    m = WhatsAppMessage(account_id=account.id, contact_id=contact_id, phone=phone, direction="out", kind=kind,
+    m = WhatsAppMessage(account_id=account.id, contact_id=contact_id, phone=phone, direction="out", kind=kind, created_at=now,
                         template_name=template.name if template else None, body=body, status=res["status"],
                         provider_id=res.get("id"),
                         window_open_until=(utcnow() + timedelta(hours=24)) if kind == "session" else None)

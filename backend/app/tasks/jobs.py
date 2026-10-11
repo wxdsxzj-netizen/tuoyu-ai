@@ -99,29 +99,60 @@ def crawl_task(crawl_job_id: str, tenant_id: str, actor_id: str | None = None):
 
 @celery_app.task(name="data.import")
 def import_task(import_job_id: str, tenant_id: str, actor_id: str | None = None):
+    from sqlalchemy import select
+
+    from app.agent.credits import lock_wallet
+    from app.core.errors import AppError
     from app.data.importer import run_import
-    from app.models import ImportJob
+    from app.models import ImportJob, Tenant, User
 
     tid = uuid.UUID(tenant_id)
-    with tenant_context(tid):
-        db = SessionLocal()
+    with tenant_context(tid), SessionLocal() as db:
         try:
-            job = db.get(ImportJob, uuid.UUID(import_job_id))
+            lock_wallet(db)
+            job = db.scalar(select(ImportJob).where(ImportJob.id == uuid.UUID(import_job_id), ImportJob.deleted_at.is_(None))
+                            .with_for_update().execution_options(populate_existing=True))
+            if job is None or job.status != "queued":
+                return
+            owner = db.get(User, job.created_by) if job.created_by else None
+            if (db.get(Tenant, tid).status != "active" or not owner or not owner.is_active
+                    or "import.run" not in owner.role.permission_codes):
+                raise AppError("COMMON_FORBIDDEN")
             job.status = "running"
-            db.commit()
-            try:
-                run_import(db, job, actor_id=uuid.UUID(actor_id) if actor_id else None)
-            except Exception as e:  # noqa: BLE001
-                db.rollback()
-                job = db.get(ImportJob, uuid.UUID(import_job_id))
-                job.status, job.error = "failed", str(e)[:2000]
+            # All row writes and terminal status commit together. A worker crash leaves queued work recoverable.
+            run_import(db, job, actor_id=owner.id)
             write_audit(db, tenant_id=tid, action="import.dry_run" if job.dry_run else "import.finished",
                         actor_type="system", object_type="import_job", object_id=job.id,
                         after={"type": job.type, "status": job.status, "total": job.total, "created": job.created,
                                "merged": job.merged, "skipped": job.skipped, "failed": job.failed})
             db.commit()
-        finally:
-            db.close()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            lock_wallet(db)
+            job = db.get(ImportJob, uuid.UUID(import_job_id), populate_existing=True)
+            if job is not None and job.status == "queued":
+                job.status, job.error = "failed", exc.code if isinstance(exc, AppError) else type(exc).__name__
+                db.commit()
+
+
+@celery_app.task(name="imports.recover")
+def recover_imports_task():
+    from sqlalchemy import select
+
+    from app.core.db import bypass_tenant
+    from app.models import ImportJob, Tenant
+    with SessionLocal() as db, bypass_tenant():
+        queued = list(db.execute(select(ImportJob.id, ImportJob.tenant_id, ImportJob.created_by)
+            .join(Tenant, Tenant.id == ImportJob.tenant_id).where(ImportJob.status == "queued", ImportJob.deleted_at.is_(None),
+                Tenant.status == "active").order_by(ImportJob.created_at).limit(100)))
+    dispatched = 0
+    for jid, tid, actor in queued:
+        try:
+            import_task.delay(str(jid), str(tid), str(actor) if actor else None)
+            dispatched += 1
+        except Exception:  # noqa: BLE001
+            continue  # Broker unavailable: retain the durable row for the next tick.
+    return {"dispatched": dispatched}
 
 
 # ---------------- P2 作业 ----------------
@@ -142,13 +173,12 @@ def verify_contacts_task(job_id: str, tenant_id: str):
             if not c or not c.email:
                 counts["skipped"] += 1
                 continue
-            r = verify_email(db, c.email, force=bool((job.params or {}).get("force")))
+            r = verify_email(db, c.email, force=bool((job.params or {}).get("force")), actor_id=job.created_by, object_id=c.id)
             apply_to_contact(c, r)
             counts[r.status] += 1
             counts["cached"] += r.cached
-            if i % 20 == 0:
-                job.progress = int(i * 95 / max(len(ids), 1))
-                db.commit()
+            job.progress = int((i + 1) * 95 / max(len(ids), 1))
+            db.commit()  # Each completed provider result and charge survive a later item's failure.
         write_audit(db, tenant_id=job.tenant_id, action="contact.verify", actor_type="system", object_type="job",
                     object_id=job.id, after=counts)
         return counts
@@ -406,9 +436,7 @@ def b4_hourly_task():
 
 @celery_app.task(name="b4.daily")
 def b4_daily_task():
-    """每日：数据保留期清理（X2）。每月 1 日：月结（赠送点数结转 + 月度账单）。"""
-    from datetime import date
-
+    """每日：数据保留期清理（X2）及未完成月份的幂等补跑。"""
     from app.b4.billing import month_close_all
     from app.b4.success import retention_cleanup
     from app.core.db import SessionLocal
@@ -418,8 +446,7 @@ def b4_daily_task():
         db.commit()
     finally:
         db.close()
-    if date.today().day == 1:
-        r["month_close"] = month_close_all()
+    r["month_close"] = month_close_all()
     return r
 
 

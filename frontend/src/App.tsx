@@ -3,6 +3,7 @@ import { Layout, Menu, Dropdown, Spin, Space, Select, Typography } from 'antd'
 import { TeamOutlined, SettingOutlined, AuditOutlined, DashboardOutlined, ThunderboltOutlined, UserOutlined, BookOutlined, AimOutlined, BankOutlined, ContactsOutlined, ImportOutlined, SafetyCertificateOutlined, MailOutlined, SendOutlined, CheckSquareOutlined, FileProtectOutlined, InboxOutlined, MessageOutlined, GiftOutlined, ShopOutlined, FireOutlined, RobotOutlined, BarChartOutlined, FileSearchOutlined, WalletOutlined, ScheduleOutlined, ApartmentOutlined, LockOutlined, RestOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from './auth'
+import { safeReturnTo } from './authPaths'
 import i18n, { LOCALE_KEY } from './i18n'
 import LoginPage from './pages/Login'
 import UsersPage from './pages/Users'
@@ -142,7 +143,7 @@ function Shell() {
             <Route path="/products" element={<ProductsPage />} />
             <Route path="/crm-plus" element={<CrmPlusPage />} />
             <Route path="/handoffs" element={<HandoffsPage />} />
-            <Route path="/crm" element={<CrmPage />} />
+            <Route path="/crm" element={new URLSearchParams(loc.search).get('tab') === 'orders' ? <Navigate to="/crm-plus?tab=orders" replace /> : <CrmPage />} />
             <Route path="/kb" element={<KbPage />} />
             <Route path="/icp" element={<IcpPage />} />
             <Route path="/companies" element={<CompaniesPage />} />
@@ -168,7 +169,8 @@ function Shell() {
 
 export default function App() {
   const { me, loading } = useAuth()
-  if (loading) return <Spin fullscreen />
+  const loc = useLocation()
+  const destination = safeReturnTo(loc.state?.returnTo || new URLSearchParams(loc.search).get('returnTo'))
   return (
     <Routes>
       <Route path="/confirm/:token" element={<ConfirmPage />} />
@@ -176,8 +178,8 @@ export default function App() {
       <Route path="/w/:key" element={<WidgetEmbedPage />} />
       <Route path="/status" element={<StatusPage />} />
       <Route path="/invite/:token" element={<InvitePage />} />
-      <Route path="/login" element={me ? <Navigate to="/" /> : <LoginPage />} />
-      <Route path="/*" element={me ? <Shell /> : <Navigate to="/login" />} />
+      <Route path="/login" element={loading ? <Spin fullscreen /> : me ? <Navigate to={destination} replace /> : <LoginPage />} />
+      <Route path="/*" element={loading ? <Spin fullscreen /> : me ? <Shell /> : <Navigate to="/login" replace state={{ returnTo: loc.pathname + loc.search + loc.hash }} />} />
     </Routes>
   )
 }

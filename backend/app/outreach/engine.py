@@ -60,7 +60,7 @@ def approve_compliance(db, e, user):
     contact = db.get(Contact, e.contact_id)
     if not contact or contact.deleted_at:
         raise AppError("COMMON_INVALID_STATE", message="联系人已删除，不能审批放行")
-    gate = check_contact(db, contact, reverify=True)
+    gate = check_contact(db, contact, reverify=True, actor_id=user.id)
     if gate["decision"] == "deny":
         raise AppError("COMMON_INVALID_STATE", message="当前合规条件禁止发送，不能审批放行", details={"blocks": gate["blocks"]})
     e.last_gate = {**(e.last_gate or {}), "compliance_approval": {
@@ -97,7 +97,7 @@ def enroll(db: Session, seq: Sequence, contact: Contact, actor=None, now: dateti
         raise AppError("SEQ_ENROLL_DUPLICATE", details={"sequence_id": str(dup.sequence_id)})
     if contact.do_not_contact_until and contact.do_not_contact_until > now:
         return {"enrolled": False, "blocks": [{"code": "COOLDOWN", "until": contact.do_not_contact_until.isoformat()}]}
-    gate = check_contact(db, contact, reverify=True)
+    gate = check_contact(db, contact, reverify=True, actor_id=actor or seq.owner_id)
     if gate["decision"] == "deny":
         return {"enrolled": False, "blocks": gate["blocks"], "warnings": gate["warnings"]}
     e = Enrollment(sequence_id=seq.id, contact_id=contact.id, company_id=contact.company_id, created_by=actor,
@@ -353,7 +353,7 @@ def process_enrollment(db: Session, e: Enrollment, now: datetime, rng: random.Ra
         e.next_run_at = now + timedelta(minutes=30)
         return "awaiting_approval"
     # 发送前最后一刻闸门（BR-5-04）
-    gate = check_contact(db, contact, reverify=True)
+    gate = check_contact(db, contact, reverify=True, actor_id=seq.owner_id)
     e.last_gate = {**(e.last_gate or {}), "decision": gate["decision"], "blocks": gate["blocks"],
                    "needs": gate["needs"], "at": now.isoformat()}
     if gate["decision"] == "deny":
@@ -433,7 +433,7 @@ def _send(db, e, seq, step, draft, contact, mb, now, rng, steps) -> str:
         return "delivery_" + intent.state
     for row in (e, seq, draft, contact, mb):
         db.refresh(row, with_for_update={"of": type(row)})
-    current_gate = check_contact(db, contact, reverify=True)
+    current_gate = check_contact(db, contact, reverify=True, actor_id=seq.owner_id)
     if (e.status not in ("scheduled", "active") or e.current_step != step.step_no or seq.status != "active"
             or contact.deleted_at or won_customer(db, contact) or draft.status != "approved"
             or intent.request_hash != intents.fingerprint(str(contact.id), contact.email, draft.subject, draft.body, draft.step_version)
