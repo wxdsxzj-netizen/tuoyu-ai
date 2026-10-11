@@ -56,6 +56,8 @@ def get_current_user(request: Request, cred: HTTPAuthorizationCredentials | None
             raise AppError("COMMON_UNAUTHENTICATED") from None
     request.state.user_id = uid
     request.state.session_id = payload.get("sid")
+    request.state.idempotency_identity = f"user:{tid}:{uid}:{payload.get('sid', '')}"
+    request.state.idempotency_authorization = ",".join(sorted(user.role.permission_codes))
     return CurrentUser(user=user, tenant=tenant, permissions=user.role.permission_codes)
 
 

@@ -27,10 +27,12 @@
 
 	# /metrics 不对公网开放（Prometheus 在内网直接抓 backend:8000/metrics）
 	@metrics path /metrics
-	respond @metrics 404
+	handle @metrics {
+		respond 404
+	}
 
-	# 后端：API、退订（/u/）、公开数据主体请求（/privacy/）、报价确认接口（/public/）、健康检查
-	@backend path /api/* /u/* /privacy/* /public/* /healthz /livez /readyz
+	# 后端：API、退订、隐私请求、报价确认、已发布站点（含 robots/sitemap）、公开 OpenAPI、健康检查
+	@backend path /api/* /u/* /privacy/* /public/* /s/* /openapi-public.json /healthz /livez /readyz
 	handle @backend {
 		reverse_proxy backend:8000 {
 			header_up X-Real-IP {remote_host}

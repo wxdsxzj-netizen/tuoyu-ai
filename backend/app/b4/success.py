@@ -273,7 +273,7 @@ RETENTION = {  # 表: (时间列, 天数, 附加条件)
     "notifications": ("created_at", 180, "read_at IS NOT NULL"),
     "crawled_pages": ("created_at", 90, None),
     "user_sessions": ("last_seen_at", 30, "revoked_at IS NOT NULL OR expires_at < now()"),
-    "idempotency_keys": ("created_at", 1, None),
+    "idempotency_keys": ("created_at", 1, "status_code != 0"),
     "widget_sessions": ("created_at", 365, None),
     "delivery_events": ("occurred_at", 730, None),
     "blacklist_checks": ("created_at", 180, None),

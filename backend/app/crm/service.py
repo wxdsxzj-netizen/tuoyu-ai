@@ -2,6 +2,7 @@
 import hashlib
 import secrets
 from datetime import date, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -118,27 +119,32 @@ def stuck_tick(db: Session) -> int:
 
 # ---------------- 报价 ----------------
 def _minor(x) -> int:
-    return int(round(float(x or 0) * 100))
+    return int((Decimal(str(x or 0)) * 100).to_integral_value(rounding=ROUND_HALF_UP))
 
 
 def compute(q: Quote) -> None:
     """BR-10-18：金额按最小货币单位整数存储；单价 ≤ 4 位小数；毛利率 1 位小数。"""
     sub = cost = 0
+    cost_known = True
     items = []
     for it in q.items or []:
-        qty = float(it.get("qty") or 0)
-        price = round(float(it.get("unit_price") or 0), 4)
-        ucost = round(float(it.get("unit_cost") or 0), 4)
-        line = int(round(qty * price * 100))
+        qty = Decimal(str(it.get("qty") or 0))
+        price = Decimal(str(it.get("unit_price") or 0)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        raw_cost = it.get("unit_cost")
+        cost_known = cost_known and raw_cost is not None
+        ucost = Decimal(str(raw_cost)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP) if raw_cost is not None else None
+        line = _minor(qty * price)
         sub += line
-        cost += int(round(qty * ucost * 100))
-        items.append({**it, "qty": qty, "unit_price": price, "unit_cost": ucost, "line_minor": line})
+        cost += _minor(qty * (ucost or 0))
+        items.append({**it, "qty": float(qty), "unit_price": float(price),
+                      "unit_cost": float(ucost) if ucost is not None else None, "line_minor": line})
     q.items = items
-    disc = int(round(sub * (q.discount_pct or 0) / 100))
+    disc = int((Decimal(sub) * Decimal(str(q.discount_pct or 0)) / 100).to_integral_value(rounding=ROUND_HALF_UP))
     q.subtotal_minor = sub
     q.total_minor = sub - disc + (q.freight_minor or 0) + (q.insurance_minor or 0)
     q.cost_minor = cost + (q.freight_minor or 0) + (q.insurance_minor or 0) + (q.commission_minor or 0)
-    q.gross_margin_pct = round((q.total_minor - q.cost_minor) / q.total_minor * 100, 1) if q.total_minor > 0 else None
+    q.gross_margin_pct = float((Decimal(q.total_minor - q.cost_minor) / q.total_minor * 100)
+                               .quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)) if cost_known and q.total_minor > 0 else None
 
 
 def thresholds(db: Session) -> dict:
@@ -152,6 +158,8 @@ def approval_need(q: Quote, th: dict | None = None) -> tuple[str | None, list[st
     th = th or {"margin_manager": MARGIN_MGR, "margin_owner": MARGIN_OWNER, "discount_manager": DISCOUNT_MGR}
     mo, mm, dm = th["margin_owner"], th["margin_manager"], th["discount_manager"]
     reasons, level = [], None
+    if any(it.get("unit_cost") is None for it in q.items or []):
+        reasons, level = ["成本尚未确认，需补充可信成本"], "manager"
     m = q.gross_margin_pct
     if m is not None and m < mo:
         reasons.append(f"毛利率 {m}% < {mo}%")
@@ -187,6 +195,12 @@ def sanction_check(db: Session, q: Quote):
 
 def submit(db: Session, q: Quote, user) -> Quote:
     ensure_editable(q)
+    from app.crm.quote_items import resolve_sku
+    refreshed = []
+    for item in q.items or []:
+        sku = resolve_sku(db, item.get("sku_id"), item.get("sku"), q.currency)
+        refreshed.append({**item, "unit_cost": sku.cost_price} if sku else item)
+    q.items = refreshed
     compute(q)
     if not q.items:
         raise AppError("COMMON_VALIDATION", details={"items": "至少一行"})
@@ -211,6 +225,8 @@ def submit(db: Session, q: Quote, user) -> Quote:
 def review(db: Session, q: Quote, user, approve: bool, note: str | None) -> Quote:
     if q.status != "pending_approval":
         raise AppError("COMMON_INVALID_STATE")
+    if approve and any(it.get("unit_cost") is None for it in q.items or []):
+        raise AppError("COMMON_VALIDATION", details={"items": "请先驳回并补充可信成本后重新提交"})
     perms = user.role.permission_codes
     from app.org.legacy_approvals import gate
     gate(db, "quote", user, q.submitted_by)

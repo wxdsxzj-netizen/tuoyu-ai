@@ -676,15 +676,18 @@ def opp_stage(oid: uuid.UUID, body: StageIn, request: Request, cu: CurrentUser =
 
 # ======================= 报价 / PI =======================
 class QuoteItem(BaseModel):
+    id: uuid.UUID | None = None
+    sku_id: uuid.UUID | None = None
     name: str = Field(min_length=1, max_length=256)
     sku: str | None = Field(None, max_length=64)
     qty: float = Field(gt=0)
     unit: str = Field("pcs", max_length=16)
     unit_price: float = Field(ge=0)
-    unit_cost: float = Field(0, ge=0)
+    unit_cost: float | None = Field(None, ge=0)
 
 
 class QuoteIn(BaseModel):
+    version: int | None = Field(None, ge=1)
     account_id: uuid.UUID
     opportunity_id: uuid.UUID | None = None
     incoterm: str = Field("FOB", pattern="^(" + "|".join(crm.INCOTERMS) + ")$")
@@ -704,8 +707,10 @@ class QuoteIn(BaseModel):
 
 
 def quote_out(q: Quote, hide_cost: bool) -> dict:
-    items = [{k: v for k, v in it.items() if not (hide_cost and k == "unit_cost")} for it in (q.items or [])]
-    d = {"id": str(q.id), "quote_no": q.quote_no, "doc_version": q.doc_version, "account_id": str(q.account_id),
+    from app.crm.quote_items import line_id
+    items = [{**{k: v for k, v in it.items() if not (hide_cost and k == "unit_cost")}, "id": line_id(q, it, index)}
+             for index, it in enumerate(q.items or [])]
+    d = {"id": str(q.id), "version": q.version, "quote_no": q.quote_no, "doc_version": q.doc_version, "account_id": str(q.account_id),
          "opportunity_id": str(q.opportunity_id) if q.opportunity_id else None, "incoterm": q.incoterm, "port": q.port, "currency": q.currency,  # noqa: E501
          "fx_rate": q.fx_rate, "items": items, "freight": q.freight_minor / 100, "insurance": q.insurance_minor / 100,
          "commission": q.commission_minor / 100, "discount_pct": q.discount_pct, "subtotal": q.subtotal_minor / 100,
@@ -715,20 +720,26 @@ def quote_out(q: Quote, hide_cost: bool) -> dict:
          "confirmed_at": q.confirmed_at.isoformat() if q.confirmed_at else None, "customer_comment": q.customer_comment,
          "created_at": q.created_at.isoformat()}
     if not hide_cost:
-        d["cost"], d["gross_margin_pct"] = q.cost_minor / 100, q.gross_margin_pct
+        d["cost"] = q.cost_minor / 100 if all(it.get("unit_cost") is not None for it in q.items or []) else None
+        d["gross_margin_pct"] = q.gross_margin_pct
     return d
 
 
 def _quote(db, qid, cu) -> Quote:
-    q = _get(db, Quote, qid)
+    q = db.scalar(select(Quote).where(Quote.id == qid, Quote.deleted_at.is_(None)).with_for_update()
+                  .execution_options(populate_existing=True))
+    if not q:
+        raise AppError("COMMON_NOT_FOUND")
     _acc(db, q.account_id, cu, write=True)
     return q
 
 
-def _apply(q: Quote, body: QuoteIn):
+def _apply(q: Quote, body: QuoteIn, db, cu):
+    from app.crm.quote_items import apply_items
+    items = apply_items(db, q, body.items, body.currency, can_edit_cost="price.floor" in cu.permissions)
     for k in ("incoterm", "port", "currency", "fx_rate", "discount_pct", "valid_until", "payment_terms", "delivery_terms", "notes", "language"):  # noqa: E501
         setattr(q, k, getattr(body, k))
-    q.items = [i.model_dump() for i in body.items]
+    q.items = items
     q.freight_minor, q.insurance_minor, q.commission_minor = crm._minor(body.freight), crm._minor(body.insurance), crm._minor(body.commission)  # noqa: E501
     q.fx_source = "manual" if body.fx_rate else None
     crm.compute(q)
@@ -756,7 +767,7 @@ def create_quote(body: QuoteIn, request: Request, cu: CurrentUser = Depends(requ
         if o.account_id != a.id:
             raise AppError("COMMON_VALIDATION", details={"opportunity_id": "不属于该客户"})
     q = Quote(quote_no=crm.next_no(db, "Q", Quote), account_id=a.id, opportunity_id=body.opportunity_id, created_by=cu.id)
-    _apply(q, body)
+    _apply(q, body, db, cu)
     db.add(q)
     db.flush()
     audit(db, cu, request, "quote.create", "quote", q.id, quote_no=q.quote_no, total=q.total_minor)
@@ -775,7 +786,19 @@ def get_quote(qid: uuid.UUID, cu: CurrentUser = Depends(require("crm.read")), db
 def update_quote(qid: uuid.UUID, body: QuoteIn, request: Request, cu: CurrentUser = Depends(require("crm.manage")), db: Session = Depends(get_db)):  # noqa: E501
     q = _quote(db, qid, cu)
     crm.ensure_editable(q)
-    _apply(q, body)
+    if body.version is None:
+        raise AppError("COMMON_REQUIRED", details={"field": "version"})
+    if body.version != q.version:
+        raise AppError("COMMON_VERSION_CONFLICT")
+    if body.account_id != q.account_id:
+        raise AppError("COMMON_VALIDATION", details={"account_id": "报价客户不可修改"})
+    if body.opportunity_id:
+        opportunity = _opp(db, body.opportunity_id, cu)
+        if opportunity.account_id != q.account_id:
+            raise AppError("COMMON_VALIDATION", details={"opportunity_id": "不属于该客户"})
+    q.opportunity_id = body.opportunity_id
+    _apply(q, body, db, cu)
+    q.version += 1
     q.status = "draft"
     audit(db, cu, request, "quote.update", "quote", q.id, total=q.total_minor)
     db.commit()

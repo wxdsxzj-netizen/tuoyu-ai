@@ -4,6 +4,7 @@
 import re
 import uuid
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -316,8 +317,10 @@ def below_floor(db: Session, q: Quote) -> list[str]:
     out = []
     for it in q.items or []:
         sid = it.get("sku_id")
-        s = db.get(ProductSku, uuid.UUID(sid)) if sid else None
-        if s and s.floor_price and float(it.get("unit_price") or 0) < s.floor_price:
+        from app.crm.quote_items import resolve_sku
+        s = resolve_sku(db, sid, it.get("sku"), q.currency)
+        effective_price = Decimal(str(it.get("unit_price") or 0)) * (1 - Decimal(str(q.discount_pct or 0)) / 100)
+        if s and s.floor_price is not None and effective_price < Decimal(str(s.floor_price)):
             out.append(f"{s.sku} 单价低于底价")
     return out
 

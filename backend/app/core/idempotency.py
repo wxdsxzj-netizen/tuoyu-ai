@@ -1,47 +1,128 @@
-"""幂等键（G-06）：带 Idempotency-Key 请求头的写请求，同一登录会话 24 小时内重复提交返回首次结果。"""
-import hashlib
-import json
+"""Authenticated, durable write claims; replay only explicitly reviewed responses.
 
-from sqlalchemy import select
+A claim is committed before the endpoint runs. A crash or failed response leaves
+status_code=0 (outcome unknown), which must be reconciled rather than retried.
+Completed claims expire after 24h; retention must never remove unknown claims.
+"""
+import hashlib
+import inspect
+from datetime import timedelta
+from functools import wraps
+
+from fastapi.routing import APIRoute, iter_route_contexts, request_response
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
-from app.core.db import SessionLocal, bypass_tenant
+from app.core.db import SessionLocal, utcnow
+from app.core.errors import AppError, error_body
+from app.models import IdempotencyKey
+
+# These create endpoints have dependency-based authorization and return no
+# secrets. Object-scoped routes need current object authorization inside their
+# handler: retain a receipt, but never return their historical response here.
+REPLAYABLE = {("POST", "/api/v1/kb/items"), ("POST", "/api/v1/open/feedback")}
+WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def conflict():
+    return JSONResponse(error_body("COMMON_IDEMPOTENCY_CONFLICT", "请求已受理；请查看原操作结果，勿换键重复提交", False),
+                        status_code=409)
+
+
+def claim(request):
+    identity = getattr(request.state, "idempotency_identity", None)
+    if not identity:
+        raise AppError("COMMON_VALIDATION", message="此入口不支持幂等键")
+    key = request.headers["idempotency-key"]
+    if len(key) > 128:
+        raise AppError("COMMON_LENGTH")
+    scope = hashlib.sha256(identity.encode()).hexdigest()
+    fingerprint = hashlib.sha256(request.state.idempotency_input +
+                                 getattr(request.state, "idempotency_authorization", "").encode()).hexdigest()
+    cutoff = utcnow() - timedelta(hours=24)
+    with SessionLocal.begin() as db:
+        # Atomic expiration + unique insertion also serialize simultaneous reuse
+        # of an expired key. Pending/unknown work is deliberately not expired.
+        db.execute(delete(IdempotencyKey).where(IdempotencyKey.scope == scope, IdempotencyKey.key == key,
+                                               IdempotencyKey.created_at < cutoff, IdempotencyKey.status_code != 0))
+        claimed = db.scalar(insert(IdempotencyKey).values(scope=scope, key=key, fingerprint=fingerprint,
+                                                        status_code=0, body="").on_conflict_do_nothing(
+                                                            constraint="uq_idem_scope_key").returning(IdempotencyKey.id))
+        if claimed:
+            request.state.idempotency_claim = claimed
+            return None
+        old = db.scalar(select(IdempotencyKey).where(IdempotencyKey.scope == scope, IdempotencyKey.key == key))
+        if old.fingerprint != fingerprint:
+            raise AppError("COMMON_IDEMPOTENCY_MISMATCH")
+        if old.status_code == 0 or old.status_code == 409:
+            return conflict()
+        return Response(old.body, status_code=old.status_code, media_type="application/json",
+                        headers={"Idempotent-Replay": "true"})
+
+
+def complete(claim_id, status, body):
+    with SessionLocal.begin() as db:
+        db.execute(update(IdempotencyKey).where(IdempotencyKey.id == claim_id, IdempotencyKey.status_code == 0)
+                   .values(status_code=status, body=body))
 
 
 class IdempotencyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         key = request.headers.get("idempotency-key")
-        if request.method not in ("POST", "PUT", "PATCH") or not key or len(key) > 128:
+        if request.method not in WRITE_METHODS or not key:
             return await call_next(request)
-        auth = request.headers.get("authorization") or request.headers.get("x-platform-admin-token") or ""
         body = await request.body()
-        scope = hashlib.sha256(auth.encode()).hexdigest()[:64]
-        fp = hashlib.sha256(f"{request.method}:{request.url.path}:".encode() + body).hexdigest()
-        from app.models import IdempotencyKey
-        db = SessionLocal()
-        try:
-            with bypass_tenant():
-                old = db.scalar(select(IdempotencyKey).where(IdempotencyKey.scope == scope, IdempotencyKey.key == key))
-                if old:
-                    if old.fingerprint != fp:
-                        return JSONResponse({"error": {"code": "COMMON_IDEMPOTENCY_MISMATCH", "message": "同一幂等键用于不同请求"}}, status_code=422)  # noqa: E501
-                    return Response(old.body, status_code=old.status_code, media_type="application/json", headers={"Idempotent-Replay": "true"})  # noqa: E501
-            resp = await call_next(request)
-            if 200 <= resp.status_code < 300 and "json" in (resp.headers.get("content-type") or ""):
-                chunks = [c async for c in resp.body_iterator]
-                data = b"".join(chunks)
-                with bypass_tenant():
-                    db.add(IdempotencyKey(scope=scope, key=key, fingerprint=fp, status_code=resp.status_code, body=data.decode("utf-8", "replace")))  # noqa: E501
-                    try:
-                        db.commit()
-                    except Exception:  # noqa: BLE001 并发重复：忽略
-                        db.rollback()
-                headers = {k: v for k, v in resp.headers.items() if k.lower() != "content-length"}
-                return Response(data, status_code=resp.status_code, headers=headers, media_type=resp.media_type)
-            return resp
-        finally:
-            db.close()
+        # Preserve the exact query (including duplicate keys), not only the path.
+        request.state.idempotency_input = (request.method.encode() + b":" + request.scope["path"].encode() + b"?" +
+                                           request.scope.get("query_string", b"") + b":" + body + b":auth:")
+        response = await call_next(request)
+        claim_id = getattr(request.state, "idempotency_claim", None)
+        if claim_id and 200 <= response.status_code < 300:
+            if (request.method, request.url.path) in REPLAYABLE and "json" in response.headers.get("content-type", ""):
+                data = b"".join([chunk async for chunk in response.body_iterator])
+                await run_in_threadpool(complete, claim_id, response.status_code, data.decode("utf-8"))
+                headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
+                return Response(data, status_code=response.status_code, headers=headers)
+            # No secret or historical object content is stored. Retain only a
+            # completed receipt so retries cannot repeat an irreversible action.
+            await run_in_threadpool(complete, claim_id, 409, "")
+        return response
 
 
-_ = json
+def _wrap_endpoint(route):
+    original = route.dependant.call
+    original_request_name = route.dependant.request_param_name
+    request_name = original_request_name or "__idempotency_request"
+    route.dependant.request_param_name = request_name
+
+    @wraps(original)
+    async def guarded(**kwargs):
+        request = kwargs[request_name] if original_request_name else kwargs.pop(request_name)
+        if request.method in WRITE_METHODS and request.headers.get("idempotency-key"):
+            replay = await run_in_threadpool(claim, request)
+            if replay is not None:
+                return replay
+        if inspect.iscoroutinefunction(original):
+            return await original(**kwargs)
+        return await run_in_threadpool(original, **kwargs)
+
+    # Preserve FastAPI's original parameter/dependency schema. It solves every
+    # auth dependency and validates the body before invoking this callable.
+    route.dependant.call = guarded
+    route.app = request_response(APIRoute.get_route_handler(route))
+
+
+def install_idempotency(app):
+    """Install once, after all routers; no cache lookup runs before authorization."""
+    # FastAPI 0.143 keeps included routers lazy. Traverse their effective
+    # contexts so the actual mounted handler (including prefix/dependencies) is
+    # protected; editing only app.routes would silently miss included routes.
+    for context in iter_route_contexts(app.routes):
+        route = context._effective_route
+        if isinstance(context.original_route, APIRoute) and route.methods.intersection(WRITE_METHODS):
+            if not getattr(route, "idempotency_installed", False):
+                _wrap_endpoint(route)
+                route.idempotency_installed = True

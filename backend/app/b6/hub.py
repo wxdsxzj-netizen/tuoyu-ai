@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.agent import credits
@@ -288,29 +289,101 @@ def enrich_waterfall(db: Session, company: Company, *, titles: list[str] | None 
     return {"tried": tried, "provider": used, "created": created, "merged": merged}
 
 
+CORRECTION_FIELDS = {
+    "company": {"name": 256, "domain": 253, "country": 2, "city": 128, "industry": 128,
+                "employee_range": 32, "description": 2000},
+    "contact": {"full_name": 128, "title": 128, "phone": 64, "linkedin_url": 512, "country": 2},
+}
+
+
+def _correction_value(entity_type, field, value):
+    from urllib.parse import urlsplit
+
+    from app.data.normalize import normalize_country, normalize_domain
+
+    fields = CORRECTION_FIELDS.get(entity_type, {})
+    if field not in fields or not isinstance(value, str) or not value.strip():
+        raise AppError("COMMON_VALIDATION", details={"field": "不可纠正的字段或无效值"})
+    value = value.strip()
+    if field == "country":
+        value = normalize_country(value)
+    elif field == "domain":
+        value = normalize_domain(value)
+    elif field == "linkedin_url":
+        parsed = urlsplit(value)
+        if (parsed.scheme not in ("https", "http") or parsed.username or parsed.password or
+                parsed.hostname not in ("linkedin.com", "www.linkedin.com")):
+            value = None
+    if not value or len(value) > fields[field] or any(ord(c) < 32 for c in value):
+        raise AppError("COMMON_VALIDATION", details={"field": field})
+    return value
+
+
+def _correction_target(db, entity_type, entity_gid, local_id, *, lock=False):
+    if entity_type not in CORRECTION_FIELDS or bool(entity_gid) == bool(local_id):
+        raise AppError("COMMON_VALIDATION", details={"target": "须指定一个共享实体或本租户对象"})
+    model = ({"company": GlobalCompany, "contact": GlobalContact} if entity_gid else
+             {"company": Company, "contact": Contact})[entity_type]
+    query = select(model).where(model.gid == entity_gid) if entity_gid else select(model).where(model.id == local_id)
+    if not entity_gid:
+        query = query.where(model.deleted_at.is_(None))
+    if lock:
+        query = query.with_for_update(of=model).execution_options(populate_existing=True)
+    target = db.scalar(query)
+    if not target:
+        raise AppError("COMMON_NOT_FOUND")
+    if getattr(target, "restricted_at", None):
+        raise AppError("COMPLIANCE_RECORD_RESTRICTED")
+    return target
+
+
 def submit_correction(db: Session, *, entity_type: str, field: str, new_value: str, user_id, entity_gid=None, local_id=None,
                       old_value=None, evidence=None) -> DataCorrection:
-    c = DataCorrection(entity_type=entity_type, entity_gid=entity_gid, local_id=local_id, field=field, old_value=old_value,
-                       new_value=new_value, evidence=evidence, created_by=user_id)
+    value = _correction_value(entity_type, field, new_value)
+    hidden = {"company": {"city", "description"}, "contact": {"phone", "linkedin_url"}}
+    if entity_gid and field in hidden[entity_type] and not is_unlocked(db, entity_type, entity_gid):
+        raise AppError("HUB_LOCKED")
+    target = _correction_target(db, entity_type, entity_gid, local_id)
+    # Snapshot from the database, never trust a submitter's claimed old value.
+    c = DataCorrection(entity_type=entity_type, entity_gid=entity_gid, local_id=local_id, field=field,
+                       old_value=getattr(target, field), new_value=value, evidence=evidence, created_by=user_id)
     db.add(c)
     db.flush()
     return c
 
 
-def review_correction(db: Session, c: DataCorrection, accept: bool, user_id, note=None) -> DataCorrection:
+def review_correction(db: Session, c: DataCorrection, accept: bool, user_id, note=None, *, platform=False) -> DataCorrection:
+    c = db.scalar(select(DataCorrection).where(DataCorrection.id == c.id).with_for_update()
+                  .execution_options(populate_existing=True))
+    if not c or c.deleted_at:
+        raise AppError("COMMON_NOT_FOUND")
+    if c.entity_gid and not platform:
+        raise AppError("COMMON_FORBIDDEN", details={"reason": "共享数据须由平台审核"})
+    if platform and not c.entity_gid:
+        raise AppError("COMMON_FORBIDDEN")
+    if user_id is not None and c.created_by == user_id:
+        raise AppError("COMMON_FORBIDDEN", details={"reason": "提交人不能自审"})
+    if c.status != "pending":
+        raise AppError("COMMON_INVALID_STATE")
+    if accept:
+        value = _correction_value(c.entity_type, c.field, c.new_value)
+        target = _correction_target(db, c.entity_type, c.entity_gid, c.local_id, lock=True)
+        if getattr(target, c.field) != c.old_value:
+            raise AppError("COMMON_VERSION_CONFLICT")
+        try:
+            with db.begin_nested():
+                setattr(target, c.field, value)
+                if c.entity_type == "company" and c.field == "name":
+                    from app.data.normalize import normalize_company_name
+                    target.name_normalized = normalize_company_name(value)
+                meta_field = "provenance" if c.entity_gid else "field_meta"
+                meta = {**_prov("correction", 0.9, c.field), "correction_id": str(c.id)}
+                setattr(target, meta_field, {**(getattr(target, meta_field) or {}), c.field: meta})
+                db.flush()
+        except IntegrityError as exc:
+            raise AppError("COMMON_ALREADY_EXISTS") from exc
     c.status = "accepted" if accept else "rejected"
     c.reviewed_by, c.review_note = user_id, note
-    if accept and c.entity_gid and c.entity_type == "company":
-        with bypass_tenant():
-            g = db.scalar(select(GlobalCompany).where(GlobalCompany.gid == c.entity_gid))
-            if g and hasattr(g, c.field):
-                setattr(g, c.field, c.new_value)
-                g.provenance = {**(g.provenance or {}), c.field: _prov("correction", 0.9, c.field)}
-    if accept and c.local_id and c.entity_type == "company":
-        local = db.get(Company, c.local_id)
-        if local and hasattr(local, c.field):
-            setattr(local, c.field, c.new_value)
-            local.field_meta = {**(local.field_meta or {}), c.field: _prov("correction", 0.9, c.field)}
     db.flush()
     return c
 

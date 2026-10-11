@@ -12,7 +12,7 @@ from app.api.platform import platform_admin
 from app.b6 import channels, customs, hub, signals
 from app.b6 import reports_tick
 from app.core.audit import write_audit
-from app.core.db import bypass_tenant, get_db, utcnow
+from app.core.db import bypass_tenant, get_db, tenant_context, utcnow
 from app.core.deps import CurrentUser, require
 from app.core.errors import AppError
 from app.services import sync_permissions
@@ -133,7 +133,7 @@ class CorrIn(BaseModel):
 @router.post("/hub/corrections", tags=["hub"])
 def corr(body: CorrIn, request: Request, cu: CurrentUser = Depends(require("hub.correct")), db: Session = Depends(get_db)):
     c = hub.submit_correction(db, user_id=cu.id, **body.model_dump())
-    audit(db, cu, request, "hub.correction", "data_correction", c.id, body.model_dump())
+    audit(db, cu, request, "hub.correction", "data_correction", c.id, body.model_dump(mode="json"))
     db.commit()
     return {"id": str(c.id), "status": c.status}
 
@@ -156,9 +156,25 @@ class ReviewIn(BaseModel):
 def review_corr(cid: uuid.UUID, body: ReviewIn, request: Request, cu: CurrentUser = Depends(require("hub.correct")), db: Session = Depends(get_db)):  # noqa: E501
     c = _get(db, DataCorrection, cid)
     hub.review_correction(db, c, body.accept, cu.id, body.note)
-    audit(db, cu, request, "hub.correction_review", "data_correction", c.id, body.model_dump())
+    audit(db, cu, request, "hub.correction_review", "data_correction", c.id, body.model_dump(mode="json"))
     db.commit()
     return {"id": str(c.id), "status": c.status}
+
+
+@plat.post("/hub/corrections/{cid}:review", tags=["hub"])
+def platform_review_corr(cid: uuid.UUID, body: ReviewIn, request: Request, db: Session = Depends(get_db)):
+    with bypass_tenant():
+        correction = _get(db, DataCorrection, cid)
+    with tenant_context(correction.tenant_id):
+        db.info["tenant_id"] = correction.tenant_id
+        hub.review_correction(db, correction, body.accept, None, body.note, platform=True)
+        write_audit(db, tenant_id=correction.tenant_id, actor_type="platform", action="hub.correction_review",
+                    object_type="data_correction", object_id=correction.id,
+                    after={"accept": body.accept, "note": body.note, "entity_gid": correction.entity_gid,
+                           "field": correction.field, "old_value": correction.old_value, "new_value": correction.new_value},
+                    request=request)
+        db.commit()
+    return {"id": str(correction.id), "status": correction.status}
 
 
 @router.get("/hub/quality", tags=["hub"])

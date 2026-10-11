@@ -70,7 +70,8 @@ def test_customs_hub_unlock_waterfall_quality(client, monkeypatch):
     # 纠错回流
     corr = client.post(f"{P}/hub/corrections", headers=h, json={"entity_type": "company", "entity_gid": gid, "field": "industry",
                                                                  "old_value": "industrial", "new_value": "HVAC", "evidence": "website"}).json()
-    assert client.post(f"{P}/hub/corrections/{corr['id']}:review", headers=h, json={"accept": True}).json()["status"] == "accepted"
+    assert client.post(f"{P}/hub/corrections/{corr['id']}:review", headers=h, json={"accept": True}).status_code == 403
+    assert client.post(f"{P}/platform/hub/corrections/{corr['id']}:review", headers=PH, json={"accept": True}).json()["status"] == "accepted"
     q = client.get(f"{P}/hub/quality", headers=h).json()
     assert q["regions"]
     # 拆分

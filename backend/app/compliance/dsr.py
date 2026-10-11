@@ -8,14 +8,14 @@ import hashlib
 import secrets
 from datetime import timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.compliance.suppression import add_global, add_suppression, key_hash
 from app.core.db import utcnow
 from app.core.errors import AppError
 from app.data.normalize import normalize_email
-from app.models import ConsentRecord, Contact, DsrRequest, Enrollment, InboundMessage, OutboundMessage, Suppression
+from app.models import ConsentRecord, Contact, DsrRequest, Enrollment, InboundMessage, OutboundMessage, Suppression, Tenant
 
 TYPES = ("access", "delete", "rectify", "object")
 TERMINAL = ("completed", "rejected")
@@ -36,6 +36,22 @@ def create_request(db: Session, *, type: str, subject_email: str, channel="manua
     if not email:
         raise AppError("COMMON_EMAIL_FORMAT")
     now = utcnow()
+    if channel == "form":
+        # Serialize anonymous retries/quota checks within this tenant. Never use
+        # a cross-tenant email lookup to deduplicate a public subject request.
+        tenant = db.scalar(select(Tenant).where(Tenant.id == db.info["tenant_id"]).with_for_update())
+        if not tenant or tenant.status != "active":
+            raise AppError("COMMON_NOT_FOUND")
+        duplicate = db.scalar(select(DsrRequest).where(
+            DsrRequest.channel == "form", DsrRequest.type == type, DsrRequest.subject_email == email,
+            DsrRequest.details == details, DsrRequest.status.not_in(TERMINAL), DsrRequest.deleted_at.is_(None)))
+        if duplicate:
+            return duplicate
+        recent = select(func.count()).select_from(DsrRequest).where(DsrRequest.channel == "form")
+        if (db.scalar(recent.where(DsrRequest.received_at > now - timedelta(hours=1))) >= 100 or
+                db.scalar(recent.where(DsrRequest.subject_email == email,
+                                       DsrRequest.received_at > now - timedelta(days=1))) >= 5):
+            raise AppError("COMMON_RATE_LIMITED")
     r = DsrRequest(type=type, channel=channel, requester_name=requester_name, requester_contact=requester_contact or email,
                    subject_email=email, subject_keys=[key_hash("email", email)], details=details,
                    rectify_changes={k: v for k, v in (rectify_changes or {}).items() if k in RECTIFIABLE} or None,
@@ -46,12 +62,19 @@ def create_request(db: Session, *, type: str, subject_email: str, channel="manua
     from app.crm.notify import notify, users_with
     notify(db, "N-23", users_with(db, "dsr.manage"), f"收到数据主体请求（{_TYPE_ZH[type]}）",
            f"法定时限 30 天，截止 {r.due_at:%Y-%m-%d}", object_type="dsr", object_id=r.id, action_url="/dsr", level="warn")
-    # BR-5-32：反对营销 / 含“停止联系”意图 → 立即全平台冷邮件抑制，不等待处理
-    if type == "object" or any(k in (details or "").lower() for k in STOP_INTENT):
-        add_global(db, key_type="email", value=email, reason="object")
-        add_suppression(db, key_type="email", value=email, reason="dsr", source_ref=f"dsr:{r.id}", actor_id=actor, hash_only=True)
-        _event(r, "global_stop_contact", None)
+    # Unverified requests may temporarily stop this tenant only. Keep a
+    # separate source-owned row: merging it into a signed unsubscribe would
+    # make rejection either revoke a legitimate opt-out or leave a false stop.
+    if _stop_requested(r):
+        db.add(Suppression(key_type="email", value=None, key_hash=key_hash("email", email),
+                           reason="dsr_pending", channels=["all"], source_ref=f"dsr:{r.id}", created_by=actor))
+        db.flush()
+        _event(r, "tenant_stop_pending_verification", None)
     return r
+
+
+def _stop_requested(r):
+    return r.type == "object" or any(k in (r.details or "").lower() for k in STOP_INTENT)
 
 
 def start_verification(db: Session, r: DsrRequest, actor=None) -> str:
@@ -78,6 +101,12 @@ def confirm_verification(db: Session, r: DsrRequest, *, code: str | None = None,
     r.verified_at, r.verification_method, r.status = utcnow(), method, "processing"
     r.verification_code_hash = None
     _event(r, "verified", actor, method=method)
+    if _stop_requested(r):
+        add_global(db, key_type="email", value=r.subject_email, reason="object")
+        add_suppression(db, key_type="email", value=r.subject_email, reason="dsr", source_ref=f"dsr:{r.id}",
+                        actor_id=actor, hash_only=True)
+        _release_pending_stop(db, r)
+        _event(r, "verified_global_stop", actor)
 
 
 def request_info(db: Session, r: DsrRequest, note: str, actor=None):
@@ -209,7 +238,15 @@ def restrict_contacts(db: Session, r: DsrRequest):
     return n
 
 
+def _release_pending_stop(db, r):
+    db.flush()  # A pending row may just have become a verified permanent stop.
+    for s in db.scalars(select(Suppression).where(Suppression.source_ref == f"dsr:{r.id}",
+                                                Suppression.reason == "dsr_pending", Suppression.revoked_at.is_(None))):
+        s.revoked_at, s.revoke_reason = utcnow(), "temporary DSR restriction resolved"
+
+
 def _release_restriction(db, r):
+    _release_pending_stop(db, r)
     for c in db.scalars(select(Contact).where(Contact.restricted_reason == f"dsr:{r.id}")):
         if c.deleted_at is None:
             c.restricted_at, c.restricted_reason = None, None
@@ -222,6 +259,7 @@ def daily_check(db: Session) -> dict:
     for r in db.scalars(select(DsrRequest).where(DsrRequest.status.not_in(TERMINAL), DsrRequest.deleted_at.is_(None))):
         if r.status == "pending_info" and r.paused_at and now - r.paused_at >= timedelta(days=30):
             r.status, r.reject_reason, r.completed_at = "rejected", "30 天未补充身份材料，自动关闭（BR-5-33）", now
+            _release_restriction(db, r)
             _event(r, "auto_closed", None)
             out["auto_closed"].append(str(r.id))
             continue

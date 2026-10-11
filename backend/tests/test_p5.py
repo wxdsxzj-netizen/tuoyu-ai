@@ -332,11 +332,10 @@ def test_analytics_funnel_deliverability_and_quote_thresholds(client):
     assert bad.status_code == 422 or bad.json()["error"]["code"] == "COMMON_VALIDATION"
     assert client.put(f"{P}/crm/settings/quote", headers=h, json={"margin_manager": 12, "margin_owner": 5, "discount_manager": 20}).status_code == 200
     from app.crm.service import approval_need
-
-    class Q:
-        gross_margin_pct, discount_pct = 13.4, 15
-    assert approval_need(Q(), {"margin_manager": 12, "margin_owner": 5, "discount_manager": 20}) == (None, [])
-    assert approval_need(Q())[0] == "manager"
+    from app.models import Quote
+    quote = Quote(gross_margin_pct=13.4, discount_pct=15, items=[{"unit_cost": 5}])
+    assert approval_need(quote, {"margin_manager": 12, "margin_owner": 5, "discount_manager": 20}) == (None, [])
+    assert approval_need(quote)[0] == "manager"
 
 
 def h2_none(client):

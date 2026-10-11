@@ -50,7 +50,7 @@ if get_settings().env == "prod":
         raise SystemExit("生产配置不完整：" + "；".join(_problems))
 
 app = FastAPI(title="拓域 AI API", version="0.1.0")
-from app.core.idempotency import IdempotencyMiddleware  # noqa: E402
+from app.core.idempotency import IdempotencyMiddleware, install_idempotency  # noqa: E402
 
 app.add_middleware(IdempotencyMiddleware)
 app.add_middleware(CORSMiddleware, allow_origins=get_settings().cors_origins.split(","),
@@ -136,3 +136,5 @@ app.include_router(p5_router)
 app.include_router(p4_router)
 app.include_router(p4_public)
 app.include_router(p1_router)
+
+install_idempotency(app)

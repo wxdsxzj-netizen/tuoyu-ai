@@ -137,7 +137,8 @@ def test_approval_center_policies_suppression_revoke_and_timeout(client):
     assert any(n["code"] == "N-15" for n in client.get(f"{P}/notifications", headers=ah).json()["items"])
     # 策略：发送类不能超时自动通过；改为超时拒绝
     assert client.put(f"{P}/approval-policies/suppression_revoke", headers=h, json={"approver_roles": ["owner"], "timeout_action": "approve"}).json()["error"]["code"] == "APPROVAL_POLICY_INVALID"
-    assert client.put(f"{P}/approval-policies/suppression_revoke", headers=ah, json={"approver_roles": ["owner", "admin"], "timeout_hours": 1, "timeout_action": "reject"}).json()["timeout_action"] == "reject"
+    assert client.put(f"{P}/approval-policies/suppression_revoke", headers=ah, json={"approver_roles": ["owner", "admin"], "timeout_hours": 1, "timeout_action": "reject"}).status_code == 403
+    assert client.put(f"{P}/approval-policies/suppression_revoke", headers=h, json={"approver_roles": ["owner"], "timeout_hours": 1, "timeout_action": "reject"}).json()["timeout_action"] == "reject"
     s2 = client.post(f"{P}/suppressions", headers=ah, json={"key_type": "email", "value": "z@y.com", "reason": "manual"}).json()
     r2 = client.post(f"{P}/suppressions/{s2['id']}:revoke", headers=ah, json={"mode": "mistake"}).json()
     tid = _ctx_db(client, h)

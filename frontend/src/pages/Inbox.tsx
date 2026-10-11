@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Badge, Button, Card, Col, Empty, Input, List, Radio, Row, Select, Space, Tag, Typography, message } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
@@ -20,40 +20,84 @@ export default function InboxPage() {
   const [bilingual, setBilingual] = useState<string | null>(null)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const generation = useRef(0)
+  const draftVersion = useRef(0)
+  const inflight = useRef(false)
+  const changeDraft = (value: string) => {
+    draftVersion.current += 1
+    setDraft(value); setCheck(undefined); setBilingual(null)
+  }
   const load = useCallback(async () => {
     const r = await api.get('/conversations', { params: { status, size: 100 } })
     setRows(r.data.items)
   }, [status])
   const open = useCallback(async (id: string) => {
-    setCur(id); setSug(undefined); setCheck(undefined); setDraft(''); setBilingual(null)
-    const r = await api.get(`/conversations/${id}`)
-    setDetail(r.data)
+    const requestGeneration = ++generation.current
+    draftVersion.current += 1
+    inflight.current = false
+    setCur(id); setDetail(undefined); setSug(undefined); setCheck(undefined); setDraft(''); setBilingual(null); setNote(''); setBusy(false)
+    try {
+      const r = await api.get(`/conversations/${id}`)
+      if (generation.current === requestGeneration && r.data.conversation.id === id) setDetail(r.data)
+    } catch { /* The API client displays the error; the stale conversation stays hidden. */ }
   }, [])
   useEffect(() => { load() }, [load])
+  useEffect(() => () => { generation.current += 1 }, [])
+
+  const c = detail?.conversation.id === cur ? detail?.conversation : undefined
+  const begin = () => {
+    if (!c || inflight.current) return undefined
+    inflight.current = true; setBusy(true)
+    return { id: c.id as string, generation: generation.current, version: draftVersion.current }
+  }
+  const current = (op: { generation: number }) => generation.current === op.generation
+  const finish = (op: { generation: number }) => {
+    if (current(op)) { inflight.current = false; setBusy(false) }
+  }
 
   const suggest = async (tone = 'professional') => {
-    setBusy(true)
-    try { const r = await api.post(`/conversations/${cur}:suggest`, null, { params: { tone } }); setSug(r.data); if (r.data.drafts[0]) setDraft(r.data.drafts[0].body) } finally { setBusy(false) }
+    const op = begin(); if (!op) return
+    try {
+      const r = await api.post(`/conversations/${op.id}:suggest`, null, { params: { tone } })
+      if (current(op) && draftVersion.current === op.version) {
+        setSug(r.data)
+        if (r.data.drafts[0]) changeDraft(r.data.drafts[0].body)
+      }
+    } catch { /* API client feedback; preserve the current draft. */ } finally { finish(op) }
   }
   const precheck = async () => {
-    const r = await api.post(`/conversations/${cur}:check`, { body: draft })
-    setCheck(r.data)
-    if (/[\u4e00-\u9fff]/.test(draft)) {
-      const tr = await api.post('/inbox/translate', { text: draft, target: detail?.conversation.language || 'en' })
-      setBilingual(tr.data.available ? tr.data.text : null)
-    }
+    const op = begin(); if (!op) return
+    const body = draft, language = c.language || 'en'
+    try {
+      const r = await api.post(`/conversations/${op.id}:check`, { body })
+      if (!current(op) || draftVersion.current !== op.version) return
+      setCheck({ ...r.data, checkedBody: body })
+      if (/[\u4e00-\u9fff]/.test(body)) {
+        const tr = await api.post('/inbox/translate', { text: body, target: language })
+        if (current(op) && draftVersion.current === op.version) setBilingual(tr.data.available ? tr.data.text : null)
+      }
+    } catch { /* Do not authorize a draft when the check fails. */ } finally { finish(op) }
   }
   const send = async () => {
-    setBusy(true)
+    if (!check || check.checkedBody !== draft || check.gate.decision === 'deny' || check.qa.blocking.length) return
+    const op = begin(); if (!op) return
     try {
-      await api.post(`/conversations/${cur}:reply`, { body: draft })
-      message.success(t('p4.sent')); setDraft(''); setCheck(undefined); open(cur!); load()
-    } finally { setBusy(false) }
+      await api.post(`/conversations/${op.id}:reply`, { body: draft })
+      if (current(op)) { message.success(t('p4.sent')); await open(op.id) }
+      await load()
+    } catch { /* Preserve the selected conversation and draft for retry. */ } finally { finish(op) }
   }
-  const addNote = async () => { await api.post(`/conversations/${cur}/notes`, { body: note }); setNote(''); open(cur!) }
-  const setConvStatus = async (s: string) => { await api.patch(`/conversations/${cur}`, { status: s }); open(cur!); load() }
+  const mutateConversation = async (action: (id: string) => Promise<unknown>) => {
+    const op = begin(); if (!op) return
+    try {
+      await action(op.id)
+      if (current(op)) await open(op.id)
+      await load()
+    } catch { /* API client feedback. */ } finally { finish(op) }
+  }
+  const addNote = () => mutateConversation((id) => api.post(`/conversations/${id}/notes`, { body: note }))
+  const setConvStatus = (s: string) => mutateConversation((id) => api.patch(`/conversations/${id}`, { status: s }))
 
-  const c = detail?.conversation
   return (
     <Row gutter={16}>
       <Col span={8}>
@@ -73,7 +117,7 @@ export default function InboxPage() {
         {!c ? <Empty description={t('p4.pickConv')} /> : (
           <Card size="small" title={<Space>{c.peer_email}<Tag>{t(`p4.cs_${c.status}`)}</Tag>{detail.account && <Tag color="blue">{detail.account.name}</Tag>}
             {detail.handoff && <Tag color="green">{t('p4.handoff')}·{t(`p4.hs_${detail.handoff.status}`)}</Tag>}</Space>}
-            extra={<Space><Button size="small" onClick={async () => { await api.post(`/conversations/${cur}:translate`); open(cur!) }}>{t('p4.translate')}</Button>
+            extra={<Space><Button size="small" disabled={busy} onClick={() => mutateConversation((id) => api.post(`/conversations/${id}:translate`))}>{t('p4.translate')}</Button>
               <Button size="small" onClick={() => setConvStatus(c.status === 'closed' ? 'pending' : 'closed')}>{c.status === 'closed' ? t('p4.reopen') : t('p4.close')}</Button>
               <Button size="small" danger onClick={() => setConvStatus('spam')}>{t('p4.spam')}</Button></Space>}>
             <div style={{ maxHeight: 420, overflow: 'auto', marginBottom: 12 }}>
@@ -95,9 +139,9 @@ export default function InboxPage() {
                   options={['professional', 'friendly', 'concise'].map((v) => ({ value: v, label: t(`p4.tone_${v}`) }))} />
               </Space>
               {sug?.needs_human && <Alert type="warning" showIcon style={{ marginBottom: 8 }} message={t('p4.sensitiveWarn', { topics: (sug.sensitive_zh || []).join('、') || t('p4.lowConfidence') })} />}
-              {sug && sug.drafts.length > 1 && <Radio.Group style={{ marginBottom: 8 }} onChange={(e) => setDraft(sug.drafts[e.target.value].body)} defaultValue={0}
+              {sug && sug.drafts.length > 1 && <Radio.Group style={{ marginBottom: 8 }} onChange={(e) => changeDraft(sug.drafts[e.target.value].body)} defaultValue={0}
                 options={sug.drafts.map((_: any, i: number) => ({ value: i, label: `${t('p4.draft')} ${i + 1}` }))} />}
-              <Input.TextArea rows={6} value={draft} onChange={(e) => { setDraft(e.target.value); setCheck(undefined) }} placeholder={t('p4.replyPh')} />
+              <Input.TextArea rows={6} value={draft} onChange={(e) => changeDraft(e.target.value)} placeholder={t('p4.replyPh')} />
               {bilingual && <Card size="small" style={{ marginTop: 8 }} title={t('p4.bilingual')}><pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontFamily: 'inherit' }}>{bilingual}</pre></Card>}
               {check && <div style={{ marginTop: 8 }}>
                 {check.gate.decision === 'deny' && <Alert type="error" showIcon message={t('p4.gateDeny', { codes: check.gate.blocks.map((b: any) => b.code).join(', ') })} />}
@@ -106,8 +150,8 @@ export default function InboxPage() {
                   description={check.qa.warnings.length ? `${t('p4.warnings')}：${check.qa.warnings.map((w: any) => t(`p3.qa_${w.code}`, { defaultValue: w.code })).join('、')}` : undefined} />}
               </div>}
               <Space style={{ marginTop: 8 }}>
-                <Button disabled={!draft.trim()} onClick={precheck}>{t('p4.precheck')}</Button>
-                <Button type="primary" loading={busy} disabled={!check || check.gate.decision === 'deny' || check.qa.blocking.length > 0} onClick={send}>{t('p4.send')}</Button>
+                <Button disabled={busy || !draft.trim()} onClick={precheck}>{t('p4.precheck')}</Button>
+                <Button type="primary" loading={busy} disabled={!check || check.checkedBody !== draft || check.gate.decision === 'deny' || check.qa.blocking.length > 0} onClick={send}>{t('p4.send')}</Button>
                 <Typography.Text type="secondary">{t('p4.humanSends')}</Typography.Text>
               </Space>
             </>}

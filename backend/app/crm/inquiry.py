@@ -58,11 +58,11 @@ def _fetch_site(domain: str):
     import httpx
 
     from app.core.config import get_settings
-    from app.data.crawler import UrlNotAllowed, check_url_allowed, parse_html
+    from app.data.crawler import parse_html
+    from app.data.safe_http import UrlNotAllowed, safe_get
     url = f"https://{domain}/"
     try:
-        check_url_allowed(url)
-        r = httpx.get(url, timeout=6, follow_redirects=True, headers={"User-Agent": get_settings().crawl_user_agent})
+        r = safe_get(url, timeout=6, headers={"User-Agent": get_settings().crawl_user_agent}, max_bytes=300_000)
         if r.status_code != 200 or "html" not in r.headers.get("content-type", ""):
             return None
         page, _ = parse_html(str(r.url), r.text[:300_000])

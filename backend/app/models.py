@@ -1497,7 +1497,7 @@ class IdempotencyKey(Base):
     key: Mapped[str] = mapped_column(String(128))
     fingerprint: Mapped[str] = mapped_column(String(64))
     status_code: Mapped[int] = mapped_column(Integer)
-    body: Mapped[bytes] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     __table_args__ = (UniqueConstraint("scope", "key", name="uq_idem_scope_key"),)
 

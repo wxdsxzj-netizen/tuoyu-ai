@@ -133,9 +133,9 @@ async def tech_fp(cid: uuid.UUID, request: Request, cu: CurrentUser = Depends(re
     html = ""
     if co.domain:
         try:
-            import httpx
+            from app.data.safe_http import safe_get
 
-            r = httpx.get(f"https://{co.domain}", timeout=6, follow_redirects=True)
+            r = safe_get(f"https://{co.domain}", timeout=6, max_bytes=50_000)
             html = r.text[:50000]
             fp = site_mod.fingerprint(html, dict(r.headers))
         except Exception:  # noqa: BLE001
@@ -608,12 +608,19 @@ _ = (Header, Query, hashlib, ImMessage, LeadCharge, MetaMessage, Plan, SlaCredit
 
 # ---------- 公开 API（X-API-Key 鉴权） ----------
 def api_key_auth(scope: str):
-    def dep(x_api_key: str | None = Header(None), db: Session = Depends(get_db)) -> ApiKey:
+    def dep(request: Request, x_api_key: str | None = Header(None), db: Session = Depends(get_db)) -> ApiKey:
         from app.core.context import tenant_id_var
 
         k = plat_mod.verify_api_key(db, x_api_key or "")
         if not k:
             raise AppError("AUTH_API_KEY_INVALID")
+        from app.models import Tenant
+
+        tenant = db.get(Tenant, k.tenant_id)
+        if not tenant or tenant.status != "active":
+            raise AppError("AUTH_USER_DISABLED")
+        request.state.idempotency_identity = f"api:{k.tenant_id}:{k.id}"
+        request.state.idempotency_authorization = ",".join(sorted(k.scopes or []))
         if scope not in (k.scopes or []):
             raise AppError("COMMON_FORBIDDEN", details={"scope": scope})
         tenant_id_var.set(k.tenant_id)

@@ -7,7 +7,7 @@ from datetime import timedelta
 from app.core.db import SessionLocal, tenant_context, utcnow
 from app.models import Quote
 from tests.conftest import add_user, register
-from tests.test_p4 import ITEMS
+from tests.test_p4 import sales_quote_items
 
 P = "/api/v1"
 
@@ -141,7 +141,7 @@ def test_samples_orders_payments_fx_unlock_repurchase(client):
     assert client.post(f"{P}/samples/{s['id']}:move", headers=sh, json={"to": "shipped"}).json()["error"]["code"] == "COMMON_VALIDATION"
     client.post(f"{P}/samples/{s['id']}:move", headers=sh, json={"to": "shipped", "courier": "DHL", "tracking_no": "123"})
     assert client.post(f"{P}/samples/{s['id']}:move", headers=sh, json={"to": "received"}).json()["status"] == "received"
-    q = client.post(f"{P}/quotes", headers=sh, json={"account_id": acc["id"], "opportunity_id": opp["id"], "items": ITEMS, "currency": "EUR",
+    q = client.post(f"{P}/quotes", headers=sh, json={"account_id": acc["id"], "opportunity_id": opp["id"], "items": sales_quote_items(client, h, "EUR"), "currency": "EUR",
                                                      "valid_until": "2099-01-01"}).json()
     sub = client.post(f"{P}/quotes/{q['id']}:submit", headers=sh).json()
     assert sub["status"] == "approved"
@@ -182,7 +182,7 @@ def test_legacy_approvals_follow_unified_policy(client):
     s, sh = add_user(client, h, "s@a.com", "sales")
     a, ah = add_user(client, h, "admin@a.com", "admin")
     acc = client.post(f"{P}/accounts", headers=sh, json={"name": "Acme GmbH", "domain": "acme.de"}).json()
-    body = {"account_id": acc["id"], "items": ITEMS, "discount_pct": 20, "valid_until": "2099-01-01"}
+    body = {"account_id": acc["id"], "items": sales_quote_items(client, h), "discount_pct": 20, "valid_until": "2099-01-01"}
     q1 = client.post(f"{P}/quotes", headers=sh, json=body).json()
     q2 = client.post(f"{P}/quotes", headers=sh, json=body).json()
     for q in (q1, q2):

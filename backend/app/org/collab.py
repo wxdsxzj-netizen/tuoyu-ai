@@ -73,6 +73,7 @@ APPROVAL_TYPES = {
     "quote_unlock": ("已锁定单据解锁", ["owner", "admin"], False, "quote.approve"),
     "account_merge": ("客户合并", ["owner", "admin"], False, "crm.admin"),
 }
+OWNER_ONLY_TYPES = frozenset({"data_export", "suppression_revoke"})
 
 
 def policy(db: Session, t: str) -> dict:
@@ -81,11 +82,19 @@ def policy(db: Session, t: str) -> dict:
     if not p:
         return {"approval_type": t, "label": zh, "approver_roles": roles, "timeout_hours": 24, "timeout_action": "escalate",
                 "allow_self": False, "send_type": send, "permission": perm, "custom": False}
-    return {"approval_type": t, "label": zh, "approver_roles": p.approver_roles or roles, "timeout_hours": p.timeout_hours,
-            "timeout_action": p.timeout_action, "allow_self": p.allow_self, "send_type": send, "permission": perm, "custom": True}
+    # Existing downgraded rows must not bypass the invariant at execution time.
+    return {"approval_type": t, "label": zh, "approver_roles": ["owner"] if t in OWNER_ONLY_TYPES else p.approver_roles or roles,
+            "timeout_hours": p.timeout_hours, "timeout_action": p.timeout_action,
+            "allow_self": False if t in OWNER_ONLY_TYPES else p.allow_self, "send_type": send, "permission": perm, "custom": True}
 
 
 def set_policy(db: Session, t: str, roles: list[str], hours: int, action: str, allow_self: bool, actor) -> dict:
+    if t in OWNER_ONLY_TYPES:
+        user = db.get(User, actor)
+        if not user or not user.is_active or user.deleted_at or user.role.code != "owner":
+            raise AppError("COMMON_FORBIDDEN")
+        if set(roles) != {"owner"} or allow_self:
+            raise AppError("APPROVAL_POLICY_INVALID")
     if t not in APPROVAL_TYPES or action not in ("escalate", "reject", "approve") or not roles or not 1 <= hours <= 720:
         raise AppError("COMMON_VALIDATION")
     if action == "approve" and APPROVAL_TYPES[t][2]:
@@ -122,7 +131,8 @@ def decide(db: Session, r: ApprovalRequest, u: User, approve: bool, comment: str
         raise AppError("COMMON_INVALID_STATE")
     if not can_approve(db, r.approval_type, u):
         raise AppError("COMMON_FORBIDDEN")
-    if r.requester_id == u.id and not policy(db, r.approval_type)["allow_self"] and u.role.code != "owner":
+    if r.requester_id == u.id and (r.approval_type in OWNER_ONLY_TYPES or
+                                  (not policy(db, r.approval_type)["allow_self"] and u.role.code != "owner")):
         raise AppError("APPROVAL_SELF")
     r.status, r.decided_by, r.decided_at, r.comment = ("approved" if approve else "rejected"), u.id, utcnow(), comment
     if approve and r.approval_type in EXECUTORS:

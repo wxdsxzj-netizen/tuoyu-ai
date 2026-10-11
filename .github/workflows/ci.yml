@@ -1,6 +1,6 @@
 name: CI
 on:
-  push: { branches: [main, master] }
+  push: { branches: [main, master, "fix/audit-*"] }
   pull_request:
 jobs:
   backend:
@@ -16,6 +16,7 @@ jobs:
         ports: ["6379:6379"]
         options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 10
     env:
+      TL_SECRETS_FILE: /dev/null
       TL_DATABASE_URL: postgresql+psycopg://tl:tl@localhost:5432/tradeleads_test
       TL_REDIS_URL: redis://localhost:6379/0
     defaults: { run: { working-directory: backend } }
@@ -39,8 +40,11 @@ jobs:
         with: { node-version: "20", cache: npm, cache-dependency-path: frontend/package-lock.json }
       - run: npm ci
       - run: npm run lint
+      - run: npm test
       - run: npm run build
   docker:
+    # Audit branches are authorized for isolated tests only.
+    if: ${{ !startsWith(github.ref, 'refs/heads/fix/audit-') }}
     runs-on: ubuntu-latest
     needs: [backend, frontend]
     steps:

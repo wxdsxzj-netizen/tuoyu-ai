@@ -9,6 +9,7 @@ email-validator==2.3.0
 fastapi==0.143.0
 holidays==0.106
 httpx==0.28.1
+httpcore==1.0.9
 openpyxl==3.1.5
 pgvector==0.5.1
 psycopg-binary==3.3.6

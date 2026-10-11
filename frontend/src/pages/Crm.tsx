@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Card, Col, DatePicker, Drawer, Form, Input, InputNumber, Modal, Radio, Row, Select, Space, Table, Tabs, Tag, Typography, message } from 'antd'
+import Decimal from 'decimal.js'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
@@ -113,8 +114,18 @@ function Pipeline() {
   </>
 }
 
-function QuoteEditor({ quote, onDone }: { quote: any; onDone: () => void }) {
+export function QuoteEditor({ quote, onDone }: { quote: any; onDone: () => void }) {
   const { t } = useTranslation()
+  const { can } = useAuth()
+  const seeCost = can('price.floor')
+  const [thresholds, setThresholds] = useState<{ margin_manager: number; margin_owner: number; discount_manager: number } | null>(null)
+  useEffect(() => {
+    let active = true
+    api.get('/crm/settings/quote').then(r => { if (active) setThresholds(r.data) }).catch(() => {})
+    return () => { active = false }
+  }, [])
+  const [saving, setSaving] = useState(false)
+  const pending = useRef(false)
   const [accounts, setAccounts] = useState<any[]>([])
   const [opps, setOpps] = useState<any[]>([])
   const [form] = Form.useForm()
@@ -123,15 +134,34 @@ function QuoteEditor({ quote, onDone }: { quote: any; onDone: () => void }) {
   useEffect(() => { if (acc) api.get('/opportunities', { params: { account_id: acc } }).then((r) => setOpps(r.data.items)) }, [acc])
   const items = Form.useWatch('items', form) || []
   const disc = Form.useWatch('discount_pct', form) || 0
-  const sub = items.reduce((s: number, i: any) => s + (i?.qty || 0) * (i?.unit_price || 0), 0)
-  const cost = items.reduce((s: number, i: any) => s + (i?.qty || 0) * (i?.unit_cost || 0), 0)
-  const total = sub * (1 - disc / 100)
-  const margin = total > 0 ? ((total - cost) / total) * 100 : 0
+  const freight = Form.useWatch('freight', form) || 0
+  const insurance = Form.useWatch('insurance', form) || 0
+  const commission = Form.useWatch('commission', form) || 0
+  const minor = (value: Decimal.Value) => new Decimal(value).times(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+  const price = (value: number) => new Decimal(value || 0).toDecimalPlaces(4, Decimal.ROUND_HALF_UP)
+  const sub = items.reduce((sum: Decimal, i: any) => sum.plus(minor(price(i?.unit_price).times(i?.qty || 0))), new Decimal(0))
+  const cost = items.reduce((sum: Decimal, i: any) => sum.plus(minor(price(i?.unit_cost).times(i?.qty || 0))), new Decimal(0))
+    .plus(minor(freight)).plus(minor(insurance)).plus(minor(commission))
+  const totalMinor = sub.minus(sub.times(disc).div(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP))
+    .plus(minor(freight)).plus(minor(insurance))
+  const total = totalMinor.div(100)
+  const margin = totalMinor.gt(0) && items.length > 0 && items.every((i: any) => typeof i?.unit_cost === 'number')
+    ? totalMinor.minus(cost).div(totalMinor).times(100).toDecimalPlaces(1, Decimal.ROUND_HALF_UP).toNumber() : null
+  const needsApproval = thresholds && ((margin !== null && margin < Math.max(thresholds.margin_manager, thresholds.margin_owner))
+    || disc > thresholds.discount_manager)
   const init = quote ? { ...quote, valid_until: undefined } : { incoterm: 'FOB', currency: 'USD', language: 'en', discount_pct: 0, items: [{ unit: 'pcs' }] }
   const submit = async (v: any) => {
-    const body = { ...v, valid_until: v.valid_until?.format('YYYY-MM-DD') ?? quote?.valid_until ?? null }
-    if (quote?.id) await api.put(`/quotes/${quote.id}`, body); else await api.post('/quotes', body)
-    onDone()
+    if (pending.current) return
+    pending.current = true
+    setSaving(true)
+    try {
+      const body = { ...v, version: quote?.version, valid_until: v.valid_until?.format('YYYY-MM-DD') ?? quote?.valid_until ?? null }
+      if (quote?.id) await api.put(`/quotes/${quote.id}`, body); else await api.post('/quotes', body)
+      onDone()
+    } finally {
+      pending.current = false
+      setSaving(false)
+    }
   }
   return <Form form={form} layout="vertical" initialValues={init} onFinish={submit}>
     <Row gutter={8}>
@@ -145,12 +175,14 @@ function QuoteEditor({ quote, onDone }: { quote: any; onDone: () => void }) {
     </Row>
     <Form.List name="items">{(fields, { add, remove }) => <>
       {fields.map((f) => <Space key={f.key} align="baseline" wrap>
+        <Form.Item name={[f.name, 'id']} hidden><Input /></Form.Item>
+        <Form.Item name={[f.name, 'sku_id']} hidden><Input /></Form.Item>
         <Form.Item name={[f.name, 'name']} rules={[{ required: true }]}><Input placeholder={t('p4.itemName')} style={{ width: 180 }} /></Form.Item>
-        <Form.Item name={[f.name, 'sku']}><Input placeholder="SKU" style={{ width: 90 }} /></Form.Item>
+        <Form.Item name={[f.name, 'sku']}><Input placeholder="SKU" style={{ width: 90 }} onChange={() => { form.setFieldValue(['items', f.name, 'sku_id'], undefined); form.setFieldValue(['items', f.name, 'unit_cost'], undefined) }} /></Form.Item>
         <Form.Item name={[f.name, 'qty']} rules={[{ required: true }]}><InputNumber placeholder={t('p4.qty')} min={0} /></Form.Item>
         <Form.Item name={[f.name, 'unit']}><Input placeholder={t('p4.unit')} style={{ width: 60 }} /></Form.Item>
         <Form.Item name={[f.name, 'unit_price']} rules={[{ required: true }]}><InputNumber placeholder={t('p4.unitPrice')} min={0} precision={4} /></Form.Item>
-        <Form.Item name={[f.name, 'unit_cost']}><InputNumber placeholder={t('p4.unitCost')} min={0} precision={4} /></Form.Item>
+        {seeCost && <Form.Item name={[f.name, 'unit_cost']}><InputNumber placeholder={t('p4.unitCost')} min={0} precision={4} /></Form.Item>}
         <MinusCircleOutlined onClick={() => remove(f.name)} />
       </Space>)}
       <Button type="dashed" icon={<PlusOutlined />} onClick={() => add({ unit: 'pcs' })}>{t('p4.addItem')}</Button></>}
@@ -166,8 +198,8 @@ function QuoteEditor({ quote, onDone }: { quote: any; onDone: () => void }) {
     <Form.Item name="notes" label={t('p4.notes')}><Input.TextArea rows={2} /></Form.Item>
     <Space>
       <Typography.Text>{t('p4.total')}: {total.toFixed(2)}</Typography.Text>
-      <Typography.Text type={margin < 15 || disc > 10 ? 'danger' : 'success'}>{t('p4.margin')}: {margin.toFixed(1)}%{(margin < 15 || disc > 10) && ` · ${t('p4.needsApproval')}`}</Typography.Text>
-      <Button type="primary" htmlType="submit">{t('p4.save')}</Button>
+      {seeCost && margin !== null && <Typography.Text type={needsApproval ? 'danger' : undefined}>{t('p4.margin')}: {margin.toFixed(1)}%{needsApproval && ` · ${t('p4.needsApproval')}`}</Typography.Text>}
+      <Button type="primary" htmlType="submit" loading={saving} disabled={saving}>{t('p4.save')}</Button>
     </Space>
   </Form>
 }

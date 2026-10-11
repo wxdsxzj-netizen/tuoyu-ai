@@ -15,9 +15,11 @@ def _catalog(db: Session):
     out = []
     for s in db.scalars(select(ProductSku).where(ProductSku.deleted_at.is_(None))):
         p = db.get(Product, s.product_id)
+        if not p or p.deleted_at or p.status != "active":
+            continue
         keys = {k.lower() for k in [s.sku, p.model if p else None] if k and len(k) >= 3}
         out.append((keys, s, p))
-    for p in db.scalars(select(Product).where(Product.deleted_at.is_(None))):
+    for p in db.scalars(select(Product).where(Product.deleted_at.is_(None), Product.status == "active")):
         if p.model and not any(p.model.lower() in k for k, _, _ in out):
             out.append(({p.model.lower()}, None, p))
     return out
@@ -56,8 +58,10 @@ def parse_lines(db: Session, text: str) -> dict:
         qty = float(qm.group(1).replace(",", "").replace(" ", "")) * (1000 if qm and qm.group(2) else 1) if qm else 1.0
         pm = PRICE.search(line)
         up = unit_price(s, p, qty)
-        items.append({"name": (p.name_en or p.name_zh) if p else (s.sku if s else line[:60]), "sku": s.sku if s else (p.model if p else None),  # noqa: E501
-                      "qty": qty, "unit": (s.unit if s and s.unit else "pcs"), "unit_price": up, "unit_cost": float(s.cost_price or 0) if s else 0,  # noqa: E501
+        items.append({"name": (p.name_en or p.name_zh) if p else (s.sku if s else line[:60]),
+                      "sku": s.sku if s else None, "sku_id": str(s.id) if s else None,
+                      "qty": qty, "unit": (s.unit if s and s.unit else "pcs"), "unit_price": up,
+                      "unit_cost": float(s.cost_price) if s and s.cost_price is not None else None,
                       "customer_target_price": float(pm.group(1)) if pm else None, "source_line": line[:200]})
     return {"items": items, "unmatched": unmatched[:30], "injection": injection_hits(text),
             "note": "价格按产品库阶梯价预填，必须人工核价；未匹配的行请手工添加。"}

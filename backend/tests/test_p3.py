@@ -59,14 +59,14 @@ def test_dsr_object_immediately_blocks_and_delete_flow(client):
     h = register(client, "o@a.com")
     ready_tenant(client, h)
     cid, _ = mk_contact(client, h, "bob@acme.com")
-    # 反对：立即全平台抑制（BR-5-32）
+    # 反对：未核验仅本租户临时抑制，验证前不得影响其他租户
     r = client.post(f"{P}/dsr", headers=h, json={"type": "object", "subject_email": "Bob@Acme.com", "channel": "privacy_email"})
     assert r.status_code == 201 and r.json()["days_left"] >= 29
     chk = client.get(f"{P}/contacts/{cid}/compliance-check", headers=h).json()
     assert any(b["code"] == "COMPLIANCE_SUPPRESSED" for b in chk["blocks"])
     with bypass_tenant():
         db = SessionLocal()
-        assert db.scalar(select(GlobalSuppression).where(GlobalSuppression.reason == "object"))
+        assert not db.scalar(select(GlobalSuppression).where(GlobalSuppression.reason == "object"))
         db.close()
     # 删除：未核验不能查数据 / 执行
     cid2, _ = mk_contact(client, h, "eve@beta.com", name="Eve Erase", company="Beta Pumps")

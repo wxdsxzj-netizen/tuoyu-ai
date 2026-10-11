@@ -194,7 +194,14 @@ def test_notifications_breaker_and_dsr(client):
     assert client.post(f"{P}/notifications/{n5['id']}:read", headers=sh).status_code == 404
 
 
-ITEMS = [{"name": "Ball valve DN50", "sku": "BV-50", "qty": 1000, "unit": "pcs", "unit_price": 12.5, "unit_cost": 9.0}]
+ITEMS = [{"name": "Ball valve DN50", "qty": 1000, "unit": "pcs", "unit_price": 12.5, "unit_cost": 9.0}]
+
+
+def sales_quote_items(client, owner, currency="USD"):
+    product = client.post(f"{P}/products", headers=owner, json={"name_zh": "测试可信成本"}).json()
+    sku = client.post(f"{P}/products/{product['id']}/skus", headers=owner,
+                      json={"sku": "BV-50", "cost_price": 9, "factory_price": 12.5, "currency": currency}).json()
+    return [{**{k: v for k, v in ITEMS[0].items() if k != "unit_cost"}, "sku_id": sku["id"], "sku": sku["sku"]}]
 
 
 def test_crm_quote_approval_lock_confirm_pi_pdf(client):
@@ -206,11 +213,11 @@ def test_crm_quote_approval_lock_confirm_pi_pdf(client):
     opp = client.post(f"{P}/opportunities", headers=sh, json={"account_id": acc["id"], "name": "DN50 阀门", "amount": 12500}).json()
     assert opp["stage"] == "new_inquiry" and opp["win_probability"] == 10
     # 毛利 = (12500-9000)/12500 = 28% → 无需审批
-    q = client.post(f"{P}/quotes", headers=sh, json={"account_id": acc["id"], "opportunity_id": opp["id"], "items": ITEMS,
+    q = client.post(f"{P}/quotes", headers=sh, json={"account_id": acc["id"], "opportunity_id": opp["id"], "items": sales_quote_items(client, h),
                                                      "payment_terms": "30% T/T deposit", "valid_until": "2099-01-01"}).json()
     assert q["quote_no"].startswith("Q-") and q["total"] == 12500.0 and "gross_margin_pct" not in q and "unit_cost" not in q["items"][0]
     # 折扣 20% → 毛利 10%、折扣 > 10% → 经理审批
-    body = {"account_id": acc["id"], "opportunity_id": opp["id"], "items": ITEMS, "discount_pct": 20, "valid_until": "2099-01-01",
+    body = {"account_id": acc["id"], "opportunity_id": opp["id"], "items": q["items"], "version": q["version"], "discount_pct": 20, "valid_until": "2099-01-01",
             "payment_terms": "30% T/T deposit"}
     q = client.put(f"{P}/quotes/{q['id']}", headers=sh, json=body).json()
     sub = client.post(f"{P}/quotes/{q['id']}:submit", headers=sh).json()
@@ -295,7 +302,7 @@ def test_opportunity_stages_pool_and_sanctions(client):
         aid = c.execute(text("insert into accounts (id, tenant_id, name, company_id, owner_id, pool_status, grade, stage, source, tags, version, "
                              "created_at, updated_at) select gen_random_uuid(), tenant_id, 'Sanc', id, :o, 'private', 'C', 'lead', 'manual', "
                              "'{}', 1, now(), now() from companies where id=:i returning id"), {"i": comp, "o": s2["id"]}).scalar()
-    q = client.post(f"{P}/quotes", headers=sh2, json={"account_id": str(aid), "items": ITEMS}).json()
+    q = client.post(f"{P}/quotes", headers=sh2, json={"account_id": str(aid), "items": sales_quote_items(client, h)}).json()
     client.post(f"{P}/quotes/{q['id']}:submit", headers=sh2)
     r = client.post(f"{P}/quotes/{q['id']}:send", headers=sh2)
     assert r.status_code == 409 and r.json()["error"]["code"] == "CRM_SANCTION_BLOCKED"

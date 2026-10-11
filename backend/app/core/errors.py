@@ -116,6 +116,7 @@ ERROR_CODES: dict[str, tuple[int, str, str, bool]] = {
     "KB_DOC_UNSUPPORTED": (400, "不支持的文件格式", "Unsupported file type", False),
     "KB_DOC_TOO_LARGE": (413, "单个文件不能超过 100MB", "File too large (max 100MB)", False),
     "IMPORT_UNDO_EXPIRED": (409, "只能在导入后 24 小时内撤销，且只能撤销一次", "Undo only within 24h, once", False),
+    "COMMON_IDEMPOTENCY_CONFLICT": (409, "请求已受理，请查看原操作结果", "Request already accepted; reconcile its outcome", False),
     "COMMON_IDEMPOTENCY_MISMATCH": (422, "同一幂等键用于不同请求", "Idempotency key reused with different request", False),
     "BILLING_PLAN_NOT_FOUND": (404, "套餐不存在或已下架", "Plan not found", False),
     "BILLING_SEATS_EXCEEDED": (409, "席位已满，请先增加席位或停用成员", "No seats available", False),

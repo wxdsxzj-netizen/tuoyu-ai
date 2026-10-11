@@ -220,15 +220,18 @@ async def from_attachment(request: Request, file: UploadFile = File(...), accoun
         from app.crm import service as crm
         from app.models import Quote
         a = _acc(db, account_id, cu, write=True)
-        body = QuoteIn(account_id=a.id, items=[QuoteItem(**{k: v for k, v in i.items() if k in QuoteItem.model_fields}) for i in r["items"]],  # noqa: E501
+        body = QuoteIn(account_id=a.id, items=[QuoteItem(**{k: v for k, v in i.items()
+                                                           if k in QuoteItem.model_fields and k != "unit_cost"}) for i in r["items"]],
                        notes="由客户附件识别生成（" + (file.filename or "") + "），价格需人工核价")
         q = Quote(quote_no=crm.next_no(db, "Q", Quote), account_id=a.id, created_by=cu.id)
-        _apply(q, body)
+        _apply(q, body, db, cu)
         db.add(q)
         db.flush()
         r["quote_id"], r["quote_no"] = str(q.id), q.quote_no
         audit(db, cu, request, "quote.from_attachment", "quote", q.id, {"items": len(r["items"]), "file": file.filename})
     db.commit()
+    if "price.floor" not in cu.permissions:
+        r["items"] = [{k: v for k, v in item.items() if k != "unit_cost"} for item in r["items"]]
     return r
 
 

@@ -5,9 +5,7 @@
 - 优先读取 sitemap.xml；产品页/首页优先；
 - 拒绝内网 / 回环地址（防 SSRF），单页超时 20 秒，最多 max_pages 页。
 """
-import ipaddress
 import re
-import socket
 from collections import deque
 from dataclasses import dataclass, field
 from urllib.parse import urldefrag, urljoin, urlparse
@@ -17,31 +15,10 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.core.config import get_settings
+from app.data.safe_http import UrlNotAllowed, check_url_allowed, safe_client, safe_get  # noqa: F401 re-export
 
 SKIP_EXT = re.compile(r"\.(jpg|jpeg|png|gif|webp|svg|ico|pdf|zip|rar|mp4|mp3|avi|css|js|woff2?|ttf|xml|exe|dmg)$", re.I)
 PRIORITY = re.compile(r"product|products|catalog|solution|about|company|certif|case|project|contact|产品|关于", re.I)
-
-
-class UrlNotAllowed(ValueError):
-    pass
-
-
-def check_url_allowed(url: str, allow_private: bool | None = None) -> str:
-    if allow_private is None:
-        allow_private = get_settings().crawl_allow_private
-    p = urlparse(url.strip())
-    if p.scheme not in ("http", "https") or not p.hostname:
-        raise UrlNotAllowed(url)
-    if not allow_private:
-        try:
-            infos = socket.getaddrinfo(p.hostname, p.port or (443 if p.scheme == "https" else 80))
-        except socket.gaierror as e:
-            raise UrlNotAllowed(f"无法解析域名: {p.hostname}") from e
-        for info in infos:
-            ip = ipaddress.ip_address(info[4][0])
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-                raise UrlNotAllowed(f"内网地址: {p.hostname}")
-    return url.strip()
 
 
 @dataclass
@@ -89,8 +66,7 @@ class Crawler:
     def __init__(self, client: httpx.Client | None = None, max_pages: int | None = None):
         s = get_settings()
         self.max_pages = max_pages or s.crawl_max_pages
-        self.client = client or httpx.Client(timeout=s.crawl_timeout_s, follow_redirects=True,
-                                             headers={"User-Agent": s.crawl_user_agent})
+        self.client = client or safe_client(timeout=s.crawl_timeout_s, headers={"User-Agent": s.crawl_user_agent})
         self.ua = s.crawl_user_agent
         self._robots: dict[str, RobotFileParser] = {}
 
@@ -98,13 +74,15 @@ class Crawler:
         if base not in self._robots:
             rp = RobotFileParser()
             try:
-                r = self.client.get(base + "/robots.txt")
+                r = safe_get(base + "/robots.txt", client=self.client)
                 if r.status_code >= 500:
                     rp.disallow_all = True
                 elif r.status_code >= 400:
                     rp.allow_all = True
                 else:
                     rp.parse(r.text.splitlines())
+            except UrlNotAllowed:
+                rp.disallow_all = True
             except httpx.HTTPError:
                 rp.allow_all = True
             self._robots[base] = rp
@@ -112,10 +90,10 @@ class Crawler:
 
     def _sitemap(self, base: str) -> list[str]:
         try:
-            r = self.client.get(base + "/sitemap.xml")
+            r = safe_get(base + "/sitemap.xml", client=self.client)
             if r.status_code == 200 and "<loc>" in r.text:
                 return re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", r.text)[:500]
-        except httpx.HTTPError:
+        except (httpx.HTTPError, UrlNotAllowed):
             pass
         return []
 
@@ -143,11 +121,11 @@ class Crawler:
                     res.skipped_robots.append(url)
                     continue
                 try:
-                    r = self.client.get(url)
+                    r = safe_get(url, client=self.client)
                     if r.status_code != 200 or "html" not in r.headers.get("content-type", "text/html"):
                         res.failed.append((url, f"HTTP {r.status_code}"))
                         continue
-                except httpx.HTTPError as e:
+                except (httpx.HTTPError, UrlNotAllowed) as e:
                     res.failed.append((url, type(e).__name__))
                     continue
                 page, links = parse_html(url, r.text)
