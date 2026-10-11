@@ -5,38 +5,56 @@ import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth'
+import CreateCommerce from '../CreateCommerce'
+import RemoteSelect from '../RemoteSelect'
 
 const money = (m: number, c = '') => `${(m / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })} ${c}`
 
 function Samples() {
   const { t } = useTranslation()
+  const { can } = useAuth()
   const [rows, setRows] = useState<any[]>([])
   const [ship, setShip] = useState<any>()
+  const [feedback, setFeedback] = useState<any>()
+  const [feedbackText, setFeedbackText] = useState('')
+  const [moving, setMoving] = useState(false)
+  const movingNow = useRef(false)
   const [form] = Form.useForm()
   const load = () => { api.get('/samples').then(r => setRows(r.data)) }
   useEffect(load, [])
-  const move = async (r: any, to: string, extra: any = {}) => { await api.post(`/samples/${r.id}:move`, { to, ...extra }); load() }
+  const move = async (r: any, to: string, extra: any = {}) => {
+    if (movingNow.current) return false
+    movingNow.current = true; setMoving(true)
+    try { await api.post(`/samples/${r.id}:move`, { to, ...extra }); load(); return true }
+    catch { return false }
+    finally { movingNow.current = false; setMoving(false) }
+  }
   const next: any = { requested: 'shipped', shipped: 'received', received: 'feedback', feedback: 'converted' }
   return <>
+    <CreateCommerce kind="samples" onSaved={load} />
     <Table rowKey="id" size="small" dataSource={rows} columns={[
       { title: t('b2.items'), dataIndex: 'items', render: v => (v || []).map((i: any) => `${i.name}×${i.qty}`).join('，') },
       { title: t('b2.fee'), dataIndex: 'fee_type', render: v => t('b2.fee_' + v) },
       { title: t('b2.tracking'), render: (_: any, r: any) => r.tracking_no ? `${r.courier || ''} ${r.tracking_no}` : '—' },
       { title: t('b2.status'), dataIndex: 'status', render: v => <Tag>{t('b2.sm_' + v)}</Tag> },
-      { title: '', render: (_: any, r: any) => next[r.status] && <Button size="small" onClick={() => next[r.status] === 'shipped' ? setShip(r) : move(r, next[r.status])}>{t('b2.sm_' + next[r.status])}</Button> },
+      { title: '', render: (_: any, r: any) => can('order.manage') && next[r.status] && <Button size="small" disabled={moving} onClick={() => next[r.status] === 'shipped' ? (form.resetFields(), setShip(r)) : next[r.status] === 'feedback' ? (setFeedbackText(''), setFeedback(r)) : move(r, next[r.status])}>{t('b2.sm_' + next[r.status])}</Button> },
     ]} />
-    <Modal open={!!ship} title={t('b2.sm_shipped')} onCancel={() => setShip(undefined)} onOk={async () => { await move(ship, 'shipped', form.getFieldsValue()); setShip(undefined) }}>
+    <Modal confirmLoading={moving} open={!!ship} title={t('b2.sm_shipped')} onCancel={() => setShip(undefined)} onOk={async () => { if (await move(ship, 'shipped', await form.validateFields())) setShip(undefined) }}>
       <Form form={form} layout="vertical">
         <Form.Item name="courier" label={t('b2.courier')}><Select options={['DHL', 'FedEx', 'UPS', 'TNT', 'EMS', 'SF'].map(v => ({ value: v, label: v }))} /></Form.Item>
         <Form.Item name="tracking_no" label={t('b2.trackingNo')} rules={[{ required: true }]}><Input /></Form.Item>
       </Form>
+    </Modal>
+    <Modal open={!!feedback} title="记录样品反馈" confirmLoading={moving} onCancel={() => setFeedback(undefined)}
+      onOk={async () => { if (await move(feedback, 'feedback', { feedback: feedbackText })) setFeedback(undefined) }}>
+      <Input.TextArea aria-label="样品反馈" value={feedbackText} onChange={e => setFeedbackText(e.target.value)} />
     </Modal>
   </>
 }
 
 export function Orders() {
   const { t } = useTranslation()
-  const { me } = useAuth()
+  const { me, can } = useAuth()
   const [rows, setRows] = useState<any[]>([])
   const [pay, setPay] = useState<any>()
   const [amt, setAmt] = useState<number>()
@@ -82,15 +100,17 @@ export function Orders() {
     } finally { busy.current = false; setPaying(false) }
   }
   return <>
+    <CreateCommerce kind="orders" onSaved={load} />
     <Table rowKey="id" size="small" dataSource={rows} columns={[
       { title: t('b2.orderNo'), dataIndex: 'order_no' }, { title: t('b2.total'), render: (_: any, r: any) => money(r.total_minor, r.currency) },
       { title: t('b2.paid'), render: (_: any, r: any) => money(r.paid_minor, r.currency) },
       { title: t('b2.status'), dataIndex: 'status', render: v => <Tag>{t('b2.os_' + v)}</Tag> },
       { title: t('b2.overdue'), dataIndex: 'overdue', render: v => v?.length ? <Tag color="red">{money(v[v.length - 1].short_minor)}</Tag> : '—' },
-      { title: '', render: (_: any, r: any) => <>
+      { title: '', render: (_: any, r: any) => can('order.manage') && <>
         <Button size="small" onClick={() => openPayment(r)}>{t('b2.addPayment')}</Button>
         {r.status === 'confirmed' && <Button size="small" type="link" onClick={() => status(r, 'producing')}>{t('b2.os_producing')}</Button>}
         {r.status === 'producing' && <Button size="small" type="link" onClick={() => status(r, 'shipped')}>{t('b2.os_shipped')}</Button>}
+        {!['completed', 'cancelled'].includes(r.status) && <Button danger size="small" onClick={() => Modal.confirm({ title: '确认取消订单？', onOk: () => status(r, 'cancelled') })}>取消订单</Button>}
         {r.status === 'shipped' && r.paid_minor >= r.total_minor && <Button size="small" type="link" onClick={() => status(r, 'completed')}>{t('b2.os_completed')}</Button>}
       </> },
     ]} />
@@ -156,13 +176,8 @@ function Settings({ admin }: { admin: boolean }) {
 
 function AccountPicker({ value, onChange, exclude }: { value?: string, onChange: (v: string) => void, exclude?: string }) {
   const { t } = useTranslation()
-  const [opts, setOpts] = useState<any[]>([])
-  const search = async (q: string) => {
-    const r = await api.get('/accounts', { params: { q: q || undefined, size: 20 } })
-    setOpts(r.data.items.filter((a: any) => a.id !== exclude).map((a: any) => ({ value: a.id, label: `${a.name}${a.domain ? ' · ' + a.domain : ''}${a.country ? ' · ' + a.country : ''}${a.grade ? ' · ' + a.grade : ''}` })))
-  }
-  useEffect(() => { search('') }, [exclude])
-  return <Select showSearch filterOption={false} style={{ width: 320 }} value={value} onChange={onChange} onSearch={search} options={opts} placeholder={t('b3.searchAccount')} />
+  return <RemoteSelect style={{ width: 300 }} placeholder={t('b3.searchAccount')} url="/accounts" value={value}
+    onChange={onChange} exclude={exclude} label={(row: any) => [row.name, row.domain, row.country, row.grade].filter(Boolean).join(' · ')} />
 }
 
 const GRADE_KEYS: Record<string, string[]> = { A: ['min_amount', 'min_deals', 'active_days'], B: ['min_amount', 'min_deals', 'active_days'], C: ['min_amount', 'min_deals', 'active_days'] }

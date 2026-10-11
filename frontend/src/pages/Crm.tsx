@@ -1,10 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Card, Col, DatePicker, Drawer, Form, Input, InputNumber, Modal, Radio, Row, Select, Space, Table, Tabs, Tag, Typography, message } from 'antd'
+import { Button, Card, Col, DatePicker, Drawer, Form, Input, InputNumber, Modal, Pagination, Radio, Row, Select, Space, Table, Tabs, Tag, Typography, message } from 'antd'
 import Decimal from 'decimal.js'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
+import { useServerPage, PageError } from '../useServerPage'
+import RemoteSelect from '../RemoteSelect'
 import { useAuth } from '../auth'
 
 const STAGES = ['new_inquiry', 'needs_confirmed', 'quotation', 'sampling', 'negotiation', 'won', 'lost']
@@ -21,11 +23,10 @@ function Accounts() {
   const { t } = useTranslation()
   const { can, me } = useAuth()
   const [pool, setPool] = useState('private')
-  const [rows, setRows] = useState<any[]>([])
+  const page = useServerPage('/accounts', { pool })
+  const { rows, reload: load } = page
   const [view, setView] = useState<any>()
   const [creating, setCreating] = useState(false)
-  const load = useCallback(async () => setRows((await api.get('/accounts', { params: { pool, size: 100 } })).data.items), [pool])
-  useEffect(() => { load() }, [load])
   const open = async (id: string) => setView((await api.get(`/accounts/${id}`)).data)
   const act = async (id: string, a: string) => { await api.post(`/accounts/${id}:${a}`); message.success(t('p4.done')); load(); setView(undefined) }
   return <>
@@ -33,7 +34,8 @@ function Accounts() {
       <Radio.Group value={pool} onChange={(e) => setPool(e.target.value)} optionType="button" options={[{ value: 'private', label: t('p4.private') }, { value: 'public', label: t('p4.public') }]} />
       {can('crm.manage') && <Button type="primary" onClick={() => setCreating(true)}>{t('p4.newAccount')}</Button>}
     </Space>
-    <Table rowKey="id" size="small" dataSource={rows} columns={[
+    <PageError page={page} />
+    <Table loading={page.loading} pagination={page.pagination} rowKey="id" size="small" dataSource={rows} columns={[
       { title: t('p4.accountName'), dataIndex: 'name', render: (v: string, r: any) => <a onClick={() => open(r.id)}>{v}</a> },
       { title: t('p4.domain'), dataIndex: 'domain' }, { title: t('p4.country'), dataIndex: 'country' },
       { title: t('p4.grade'), dataIndex: 'grade', render: (v: string) => <Tag color={v === 'A' ? 'red' : v === 'B' ? 'orange' : 'default'}>{t('p4.gradeN', { g: v })}</Tag> },
@@ -74,18 +76,18 @@ function Accounts() {
 function Pipeline() {
   const { t } = useTranslation()
   const { can } = useAuth()
-  const [rows, setRows] = useState<any[]>([])
+  const page = useServerPage('/opportunities', {})
+  const { rows, reload: load } = page
   const [lost, setLost] = useState<{ id: string; reason?: string } | null>(null)
   const [creating, setCreating] = useState(false)
-  const [accounts, setAccounts] = useState<any[]>([])
-  const load = useCallback(async () => setRows((await api.get('/opportunities', { params: { size: 200 } })).data.items), [])
-  useEffect(() => { load() }, [load])
   const move = async (id: string, stage: string, lost_reason?: string) => {
     if (stage === 'lost' && !lost_reason) { setLost({ id }); return }
     await api.post(`/opportunities/${id}:stage`, { stage, lost_reason }); setLost(null); load()
   }
   return <>
-    {can('crm.manage') && <Button style={{ marginBottom: 12 }} type="primary" onClick={async () => { setAccounts((await api.get('/accounts', { params: { size: 100 } })).data.items); setCreating(true) }}>{t('p4.newOpp')}</Button>}
+    {can('crm.manage') && <Button style={{ marginBottom: 12 }} type="primary" onClick={() => setCreating(true)}>{t('p4.newOpp')}</Button>}
+    <PageError page={page} />
+    <p>共 {page.data.total} 个商机；各阶段展示当前页记录。</p><Pagination {...page.pagination} style={{ marginBottom: 12 }} />
     <div style={{ display: 'flex', gap: 8, overflowX: 'auto' }}>
       {STAGES.map((s) => <Card key={s} size="small" title={`${t(`p4.st_${s}`)} (${rows.filter((r) => r.stage === s).length})`} style={{ minWidth: 220, flex: 1, background: '#fafafa' }}>
         {rows.filter((r) => r.stage === s).map((r) => <Card key={r.id} size="small" style={{ marginBottom: 8, borderColor: r.stuck_days ? '#ff4d4f' : undefined }}>
@@ -103,7 +105,7 @@ function Pipeline() {
     </Modal>
     <Modal open={creating} title={t('p4.newOpp')} footer={null} onCancel={() => setCreating(false)} destroyOnClose>
       <Form layout="vertical" onFinish={async (v) => { await api.post('/opportunities', { ...v, expected_close_date: v.expected_close_date?.format('YYYY-MM-DD') }); setCreating(false); load() }}>
-        <Form.Item name="account_id" label={t('p4.account')} rules={[{ required: true }]}><Select showSearch optionFilterProp="label" options={accounts.map((a) => ({ value: a.id, label: a.name }))} /></Form.Item>
+        <Form.Item name="account_id" label={t('p4.account')} rules={[{ required: true }]}><RemoteSelect url="/accounts" /></Form.Item>
         <Form.Item name="name" label={t('p4.oppName')} rules={[{ required: true }]}><Input /></Form.Item>
         <Space><Form.Item name="amount" label={t('p4.amount')} initialValue={0}><InputNumber min={0} /></Form.Item>
           <Form.Item name="currency" label={t('p4.currency')} initialValue="USD"><Input style={{ width: 80 }} maxLength={3} /></Form.Item>
@@ -126,12 +128,8 @@ export function QuoteEditor({ quote, onDone }: { quote: any; onDone: () => void 
   }, [])
   const [saving, setSaving] = useState(false)
   const pending = useRef(false)
-  const [accounts, setAccounts] = useState<any[]>([])
-  const [opps, setOpps] = useState<any[]>([])
   const [form] = Form.useForm()
-  useEffect(() => { api.get('/accounts', { params: { size: 100 } }).then((r) => setAccounts(r.data.items)) }, [])
   const acc = Form.useWatch('account_id', form)
-  useEffect(() => { if (acc) api.get('/opportunities', { params: { account_id: acc } }).then((r) => setOpps(r.data.items)) }, [acc])
   const items = Form.useWatch('items', form) || []
   const disc = Form.useWatch('discount_pct', form) || 0
   const freight = Form.useWatch('freight', form) || 0
@@ -165,8 +163,8 @@ export function QuoteEditor({ quote, onDone }: { quote: any; onDone: () => void 
   }
   return <Form form={form} layout="vertical" initialValues={init} onFinish={submit}>
     <Row gutter={8}>
-      <Col span={12}><Form.Item name="account_id" label={t('p4.account')} rules={[{ required: true }]}><Select disabled={!!quote?.id} showSearch optionFilterProp="label" options={accounts.map((a) => ({ value: a.id, label: a.name }))} /></Form.Item></Col>
-      <Col span={12}><Form.Item name="opportunity_id" label={t('p4.opp')}><Select allowClear options={opps.map((o) => ({ value: o.id, label: o.name }))} /></Form.Item></Col>
+      <Col span={12}><Form.Item name="account_id" label={t('p4.account')} rules={[{ required: true }]}><RemoteSelect disabled={!!quote?.id} url="/accounts" onChange={() => form.setFieldValue('opportunity_id', undefined)} /></Form.Item></Col>
+      <Col span={12}><Form.Item name="opportunity_id" label={t('p4.opp')}><RemoteSelect disabled={!acc} allowClear url="/opportunities" params={{ account_id: acc }} /></Form.Item></Col>
       <Col span={6}><Form.Item name="incoterm" label={t('p4.incoterm')}><Select options={INCOTERMS.map((x) => ({ value: x, label: x }))} /></Form.Item></Col>
       <Col span={6}><Form.Item name="port" label={t('p4.port')}><Input /></Form.Item></Col>
       <Col span={4}><Form.Item name="currency" label={t('p4.currency')}><Input maxLength={3} /></Form.Item></Col>
@@ -207,12 +205,11 @@ export function QuoteEditor({ quote, onDone }: { quote: any; onDone: () => void 
 function Quotes() {
   const { t } = useTranslation()
   const { can } = useAuth()
-  const [rows, setRows] = useState<any[]>([])
+  const page = useServerPage('/quotes', {})
+  const { rows, reload: load } = page
   const [edit, setEdit] = useState<any>(null)
   const [link, setLink] = useState<string>()
   const [voiding, setVoiding] = useState<{ id: string; reason?: string } | null>(null)
-  const load = useCallback(async () => setRows((await api.get('/quotes', { params: { size: 100 } })).data.items), [])
-  useEffect(() => { load() }, [load])
   const act = async (id: string, a: string, body?: any) => {
     const r = await api.post(`/quotes/${id}:${a}`, body)
     if (a === 'send') setLink(`${location.origin}${r.data.confirm_url}`)
@@ -221,7 +218,8 @@ function Quotes() {
   }
   return <>
     {can('crm.manage') && <Button type="primary" style={{ marginBottom: 12 }} onClick={() => setEdit({})}>{t('p4.newQuote')}</Button>}
-    <Table rowKey="id" size="small" dataSource={rows} columns={[
+    <PageError page={page} />
+    <Table loading={page.loading} pagination={page.pagination} rowKey="id" size="small" dataSource={rows} columns={[
       { title: t('p4.quoteNo'), render: (_: any, r: any) => `${r.quote_no} v${r.doc_version}` },
       { title: t('p4.incoterm'), dataIndex: 'incoterm' },
       { title: t('p4.total'), render: (_: any, r: any) => `${r.currency} ${r.total.toLocaleString()}` },
@@ -259,14 +257,15 @@ function Quotes() {
 function Pis() {
   const { t } = useTranslation()
   const { can } = useAuth()
-  const [rows, setRows] = useState<any[]>([])
+  const page = useServerPage('/pis')
+  const { rows, reload } = page
   const [bank, setBank] = useState<any>()
   const load = useCallback(async () => {
-    const [a, b] = await Promise.all([api.get('/pis'), api.get('/crm/settings/bank')]); setRows(a.data); setBank(b.data)
-  }, [])
-  useEffect(() => { load() }, [load])
+    reload(); setBank((await api.get('/crm/settings/bank')).data)
+  }, [reload])
+  useEffect(() => { api.get('/crm/settings/bank').then(r => setBank(r.data)) }, [])
   return <Row gutter={16}>
-    <Col span={14}><Table rowKey="id" size="small" dataSource={rows} columns={[
+    <Col span={14}><PageError page={page} /><Table loading={page.loading} pagination={page.pagination} rowKey="id" size="small" dataSource={rows} columns={[
       { title: t('p4.piNo'), dataIndex: 'pi_no' }, { title: t('p4.total'), render: (_: any, r: any) => `${r.currency} ${r.total.toLocaleString()}` },
       { title: t('p4.createdAt'), dataIndex: 'created_at', render: (v: string) => new Date(v).toLocaleDateString() },
       { title: '', render: (_: any, r: any) => <Button size="small" onClick={() => download(`/pis/${r.id}/pdf`, `${r.pi_no}.pdf`)}>PDF</Button> },

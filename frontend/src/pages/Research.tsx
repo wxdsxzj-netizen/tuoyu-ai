@@ -1,8 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useState } from 'react'
-import { Alert, Button, Card, Col, Input, InputNumber, List, Modal, Popover, Row, Select, Space, Table, Tag, Typography, Upload, message } from 'antd'
+import { Alert, Button, Card, Col, Input, InputNumber, List, Modal, Popover, Row, Space, Table, Tag, Typography, Upload, message } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { api, TOKEN_KEY } from '../api/client'
+import RemoteSelect from '../RemoteSelect'
 import { useAuth } from '../auth'
 
 function target(v: string) {
@@ -71,9 +72,8 @@ function Report({ r, onReload }: { r: any, onReload?: () => void }) {
 
 function InquiryPick({ onPick }: { onPick: (id: string) => void }) {
   const { t } = useTranslation()
-  const [opts, setOpts] = useState<any[]>([])
-  useEffect(() => { api.get('/inquiries', { params: { size: 50 } }).then(r => setOpts((r.data.items || []).map((i: any) => ({ value: i.id, label: `${i.grade || '-'} · ${i.peer_email}` })))).catch(() => setOpts([])) }, [])
-  return <Select style={{ width: 280 }} placeholder={t('b3.fromInquiry')} options={opts} onChange={onPick} showSearch optionFilterProp="label" />
+  return <RemoteSelect style={{ width: 280 }} placeholder={t('b3.fromInquiry')} url="/inquiries" sizeKey="page_size"
+    label={(row: any) => `${row.grade || '-'} · ${row.peer_email}`} onChange={onPick} />
 }
 
 export default function ResearchPage() {

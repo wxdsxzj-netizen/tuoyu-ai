@@ -3,13 +3,12 @@
 Run: python3 -m unittest discover -s deploy/tests -v
 """
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import time
 import unittest
-
+from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "backup.sh"
 
@@ -60,7 +59,7 @@ esac
 
     def run_backup(self, **env):
         return subprocess.run(["bash", str(self.root / "deploy/scripts/backup.sh")],
-                              env={**self.env, **env}, text=True, capture_output=True)
+                              env={**self.env, **env}, text=True, capture_output=True, check=False)
 
     def assert_failed_safely(self, result):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -90,7 +89,7 @@ esac
         for line in manifests[0].read_text().splitlines():
             self.assertFalse(Path(line.split(maxsplit=1)[1]).is_absolute())
         check = subprocess.run(["shasum", "-a", "256", "-c", manifests[0].name],
-                               cwd=self.backups, capture_output=True, text=True)
+                               cwd=self.backups, capture_output=True, text=True, check=False)
         self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
         self.assertNotIn(" 123\n", (self.metrics / "backup.prom").read_text())
         self.assertFalse(self.old.exists())

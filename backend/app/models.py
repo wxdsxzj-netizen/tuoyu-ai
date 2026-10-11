@@ -502,7 +502,9 @@ class Mailbox(TenantScoped, Base):
     imap_ssl: Mapped[bool] = mapped_column(Boolean, default=True)
     imap_username: Mapped[str | None] = mapped_column(String(320), nullable=True)
     imap_password_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
-    imap_last_uid: Mapped[int] = mapped_column(Integer, default=0)
+    imap_last_uid: Mapped[int] = mapped_column(BigInteger, default=0)
+    imap_uid_validity: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    imap_poll_error: Mapped[str | None] = mapped_column(String(128), nullable=True)
     auth_status: Mapped[str] = mapped_column(String(12), default="ok")  # ok / expired / revoked
     status: Mapped[str] = mapped_column(String(16), default="bound")
     # bound / dns_failed / warming / active / paused / cooling / recovering / auth_failed / disabled / unbound
@@ -521,6 +523,30 @@ class Mailbox(TenantScoped, Base):
     oauth_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)  # google / microsoft
     oauth_status: Mapped[str | None] = mapped_column(String(24), nullable=True)  # pending / connected / expired / stub
     oauth_meta: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class MailboxOAuthAttempt(TenantScoped, Base):
+    __tablename__ = "mailbox_oauth_attempts"
+    __table_args__ = (UniqueConstraint("state_hash", name="uq_mailbox_oauth_state"),)
+    provider: Mapped[str] = mapped_column(String(16))
+    state_hash: Mapped[str] = mapped_column(String(64))
+    verifier_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    nonce_hash: Mapped[str] = mapped_column(String(64))
+    redirect_uri: Mapped[str] = mapped_column(String(512))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    mailbox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("mailboxes.id"), nullable=True)
+
+
+class MailboxOAuthCredential(TenantOwned, TimestampMixin, Base):
+    __tablename__ = "mailbox_oauth_credentials"
+    mailbox_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("mailboxes.id", ondelete="CASCADE"), unique=True)
+    provider: Mapped[str] = mapped_column(String(16))
+    subject: Mapped[str] = mapped_column(String(255))
+    access_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    refresh_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), default="connected")
 
 
 class MailboxMetricDaily(TenantOwned, Base):
@@ -679,6 +705,19 @@ class DeliveryEvent(TenantOwned, Base):
     reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class InboundReceipt(TenantOwned, TimestampMixin, Base):
+    __tablename__ = "inbound_receipts"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "key_hash", name="uq_inbound_receipt_key"),
+        UniqueConstraint("tenant_id", "mailbox_id", "uid_validity", "uid", name="uq_inbound_receipt_uid"),
+    )
+    mailbox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    key_hash: Mapped[str] = mapped_column(String(64))
+    uid_validity: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    uid: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    result: Mapped[dict] = mapped_column(JSONB)
 
 
 class InboundMessage(TenantOwned, Base):
@@ -915,6 +954,14 @@ class Inquiry(TenantScoped, Base):
     opportunity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
 
+class InquiryConversation(TenantOwned, TimestampMixin, Base):
+    __tablename__ = "inquiry_conversations"
+    __table_args__ = (UniqueConstraint("tenant_id", "inquiry_id", "conversation_id", name="uq_inquiry_conversation"),)
+    inquiry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("inquiries.id", ondelete="CASCADE"), index=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
+    first_message_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class AssignmentRule(TenantScoped, Base):
     __tablename__ = "assignment_rules"
     name: Mapped[str] = mapped_column(String(64))
@@ -979,6 +1026,8 @@ class AgentTask(TenantScoped, Base):
     effective_autonomy: Mapped[str] = mapped_column(String(2), default="L1")
     limited_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+    execution_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     current_step: Mapped[int] = mapped_column(Integer, default=0)
     pending_approval: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     credits_held: Mapped[float] = mapped_column(Float, default=0)
@@ -988,6 +1037,27 @@ class AgentTask(TenantScoped, Base):
     pause_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentStepExecution(TenantOwned, TimestampMixin, Base):
+    __tablename__ = "agent_step_executions"
+    __table_args__ = (UniqueConstraint("tenant_id", "task_id", "step_no", name="uq_agent_step_execution"),)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_tasks.id", ondelete="CASCADE"), index=True)
+    step_no: Mapped[int] = mapped_column(Integer)
+    tool: Mapped[str] = mapped_column(String(32))
+    state: Mapped[str] = mapped_column(String(16), default="prepared")
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    execution_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class AgentControl(TenantOwned, Base):
+    __tablename__ = "agent_controls"
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_tasks.id", ondelete="CASCADE"), primary_key=True)
+    action: Mapped[str] = mapped_column(String(12))
+    actor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AgentStepLog(TenantOwned, Base):
@@ -1736,6 +1806,15 @@ class SignalSubscription(TenantScoped, Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     hits: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class SignalDelivery(TenantOwned, TimestampMixin, Base):
+    """Durable subscription match receipt; notification deletion cannot replay it."""
+    __tablename__ = "signal_deliveries"
+    __table_args__ = (UniqueConstraint("tenant_id", "subscription_id", "signal_id", name="uq_signal_delivery"),)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    signal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    recipient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
 
 
 class ContactChange(TenantScoped, Base):

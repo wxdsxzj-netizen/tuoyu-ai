@@ -106,7 +106,7 @@ $DC logs -f --tail=100 backend caddy
 
 ```bash
 bash deploy/scripts/smoke.sh https://app.example.com
-# 期望：livez ok、readyz 中 db/redis 为 true 且显示迁移版本、首页 200、/metrics 404、HSTS ✓
+# 期望：livez ok、readyz 中 db/redis/migrations_current 均为 true 且显示实际与期望迁移版本、首页 200、/metrics 404、HSTS ✓
 ```
 
 ## 8. 开通第一个租户、充值点数
@@ -151,11 +151,12 @@ crontab -e
 ```
 
 - 备份内容：数据库（`pg_dump -Fc`，自动校验可读）、上传文件目录，附 SHA256 校验文件。
-- 恢复（会覆盖数据库，需输入 RESTORE 确认）：
+- 恢复（同目录须有匹配SHA256SUMS清单，宿主机Python≥3.11；保留原数据库及附件，需输入RESTORE确认）：
   ```bash
   deploy/scripts/restore.sh backups/db-20261110T031500Z.dump backups/uploads-20261110T031500Z.tar.gz
   ```
-- **每月做一次恢复演练**：在另一台临时服务器上恢复最新备份并登录验证。
+- 脚本仅在迁移及/readyz成功后报告已验证，worker/beat/caddy保持停止。先核对备份后外发、收费、DSR及队列，再人工恢复服务；参见[演练证据与回退手册](docs/audit/restore-rehearsal.md)。
+- **每月做一次恢复演练**：在隔离临时服务器验证数据库、附件、迁移、就绪及回退，外发依赖使用替身。
 - `deploy/.env.prod` 不在备份里，请单独离线保存。
 
 ## 11. 开闸：允许发送真实邮件（需你明确确认）
@@ -176,7 +177,7 @@ ssh -L 9090:127.0.0.1:9090 -L 9093:127.0.0.1:9093 deploy@服务器IP   # 本地�
 - 指标：`/metrics`（Caddy 对公网屏蔽，Prometheus 在内网抓取）。包含 HTTP 请求数 / 耗时、数据库可用、发件箱健康级别、24 小时发信量、未恢复熔断、超时询盘、Agent 任务、未结数据主体请求、待处理交付包。
 - 告警规则：`deploy/monitoring/alerts.yml`（后端不可用、数据库不可用、5xx > 2%、P95 > 2 秒、熔断、A/B 询盘超时、数据主体请求积压、磁盘 / 内存、备份缺失）。接收方式在 `alertmanager.yml` 配置（企业微信 / 钉钉机器人 webhook 等）。
 - 日志：`TL_LOG_JSON=true` 时后端与 worker 输出 JSON 行（含 trace_id、tenant_id、路径、状态码、耗时）；`$DC logs backend | jq` 查看。前端响应头 `X-Trace-Id` 可用于定位单次请求。
-- 健康检查：`/livez`（进程存活，容器 HEALTHCHECK 用）、`/readyz`（数据库 + Redis + 迁移版本，异常返回 503）、`/healthz`（兼容旧版）。
+- 健康检查：`/livez`（进程存活，容器 HEALTHCHECK 用）、`/readyz`（数据库 + Redis + 实际迁移版本等于镜像内head，异常/缺失/旧版本返回503）、`/healthz`（兼容旧版）。
 
 ## 13. 升级与回滚
 
@@ -241,3 +242,10 @@ bash deploy/scripts/smoke.sh https://app.example.com
 - **法务模板**：`/api/v1/public/legal/<slug>/{privacy|dpa|subprocessors|cookies}`，上线前请律师审阅 `backend/legal/*.md`。
 - **解约**：`TL_CLOSURE_GRACE_DAYS=30`；`b4.hourly` 清除到期租户并生成删除证明。
 - **运维文档**：RUNBOOK.md（降级矩阵、告警处理、安全事件）、LIMITS.md（限额总表）；负载测试：`python deploy/scripts/loadtest.py https://$APP_DOMAIN <token> 20 500`（避开业务高峰）。
+
+
+### HTTP多进程指标与备份状态
+
+生产镜像通过 `python -m app.server` 启动两个HTTP worker，可用 `TL_HTTP_WORKERS` 调整。启动器在导入应用前为本次主进程创建独立的Prometheus多进程目录；worker重启保留本次主进程累计值，主进程重启从新目录开始，退出自动清理。不要绕过启动器直接以多worker Uvicorn启动，也不要让不同容器共用该目录。数据库业务快照每次抓取只查询一次，不按worker数相加。
+
+备份告警同时覆盖26小时未更新、从未产生成功指标、单个node缺失指标及整个node抓取配置缺失，持续30分钟触发。成功指标恢复后告警解除；告警不等同于备份可恢复性证明，仍须恢复演练。使用项目锁定的Prometheus 2.54.1执行 `promtool test rules deploy/monitoring/alerts.test.yml`，CI也执行相同规则测试。

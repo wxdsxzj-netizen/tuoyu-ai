@@ -3,17 +3,17 @@ import { useEffect, useState } from 'react'
 import { Alert, Button, Card, Form, Input, List, Modal, Select, Space, Switch, Table, Tabs, Tag, Typography, message } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
+import RemoteSelect from '../RemoteSelect'
 import { useAuth } from '../auth'
 
 function WidgetList() {
   const { t } = useTranslation()
   const { can } = useAuth()
   const [rows, setRows] = useState<any[]>([])
-  const [users, setUsers] = useState<any[]>([])
   const [edit, setEdit] = useState<any>()
   const [form] = Form.useForm()
   const load = () => api.get('/widgets').then(r => setRows(r.data))
-  useEffect(() => { load(); api.get('/users').then(r => setUsers(r.data.items || r.data)).catch(() => setUsers([])) }, [])
+  useEffect(() => { load() }, [])
   const open = (w?: any) => { setEdit(w || {}); form.setFieldsValue(w ? { ...w, origins: (w.allowed_origins || []).join(','), owner: w.routing?.owner_id } : { kind: 'form', cookie_banner: true }) }
   const save = async () => {
     const v = await form.validateFields()
@@ -48,7 +48,7 @@ function WidgetList() {
         <Form.Item name="name" label={t('b4.name')} rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item name="kind" label={t('b4.kind')}><Select options={['form', 'chat'].map(k => ({ value: k, label: t('b4.kind_' + k) }))} /></Form.Item>
         <Form.Item name="origins" label={t('b4.origins')} extra={t('b4.originsHelp')}><Input placeholder="nbvalve.com, shop.nbvalve.com" /></Form.Item>
-        <Form.Item name="owner" label={t('b4.routeTo')}><Select allowClear options={users.map((u: any) => ({ value: u.id, label: u.name }))} /></Form.Item>
+        <Form.Item name="owner" label={t('b4.routeTo')}><RemoteSelect allowClear url="/users" /></Form.Item>
         <Form.Item name="greeting" label={t('b4.greeting')}><Input /></Form.Item>
         <Form.Item name="consent_text" label={t('b4.consentText')} extra={t('b4.consentHelp')}><Input.TextArea rows={2} /></Form.Item>
         <Space size={24}>

@@ -1,13 +1,16 @@
 """业务信号与订阅（M3-05/08/12）：从海关信号 + mock 新闻/招聘生成；命中订阅后站内通知。"""
+import logging
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.b6 import customs as cu
 from app.core.db import SessionLocal, bypass_tenant, tenant_context, utcnow
 from app.crm.notify import notify
-from app.models import BusinessSignal, SignalSubscription, Tenant
+from app.models import BusinessSignal, SignalDelivery, SignalSubscription, Tenant, User
+
+log = logging.getLogger(__name__)
 
 KINDS = {"buy_window": "采购窗口临近", "supplier_switch": "供应商切换", "hiring": "相关岗位招聘", "news": "负面/经营新闻",
          "exhibition": "展会参展", "tender": "招投标"}
@@ -62,7 +65,12 @@ def _add(db, domain, kind, title, detail, score, country=None):
 def match(sub: SignalSubscription, sig: BusinessSignal) -> bool:
     if sub.kinds and sig.kind not in sub.kinds:
         return False
-    if sub.countries and sig.country and sig.country not in sub.countries:
+    if sub.countries and sig.country not in sub.countries:
+        return False
+    detail = sig.detail or {}
+    if sub.hs_codes and not any(str(code).startswith(str(wanted)) for code in detail.get("hs_codes", []) for wanted in sub.hs_codes):
+        return False
+    if sub.industries and not set(sub.industries) & set(detail.get("industries", [])):
         return False
     if sub.keywords:
         blob = (sig.title + " " + str(sig.detail)).lower()
@@ -72,24 +80,59 @@ def match(sub: SignalSubscription, sig: BusinessSignal) -> bool:
 
 
 def fanout(db: Session) -> int:
-    """把新信号推给各租户订阅（站内通知）。"""
+    """Match each subscription/signal once; retain receipts beyond notification life."""
     with bypass_tenant():
-        sigs = list(db.scalars(select(BusinessSignal).where(BusinessSignal.detected_at >= utcnow() - timedelta(hours=36)).limit(200)))
-        tids = [t.id for t in db.scalars(select(Tenant).where(Tenant.status == "active"))]
-    n = 0
+        tids = list(db.scalars(select(Tenant.id).where(Tenant.status == "active")))
+    n, now = 0, utcnow()
     for tid in tids:
         with tenant_context(tid):
             db.info["tenant_id"] = tid
-            subs = list(db.scalars(select(SignalSubscription).where(SignalSubscription.enabled.is_(True), SignalSubscription.deleted_at.is_(None))))  # noqa: E501
+            tenant = db.scalar(select(Tenant).where(Tenant.id == tid).with_for_update().execution_options(populate_existing=True))
+            if tenant is None or tenant.status != "active":
+                db.rollback()
+                continue
+            subs = list(db.scalars(select(SignalSubscription).where(SignalSubscription.tenant_id == tid,
+                SignalSubscription.enabled.is_(True), SignalSubscription.deleted_at.is_(None)).order_by(SignalSubscription.id)
+                .execution_options(populate_existing=True)))
             for sub in subs:
-                for sig in sigs:
-                    if not match(sub, sig):
-                        continue
-                    notify(db, "N-39", [sub.created_by], f"信号：{KINDS.get(sig.kind, sig.kind)}", sig.title,
-                           object_type="business_signal", object_id=None, action_url="/data-hub")
-                    sub.hits = (sub.hits or 0) + 1
-                    sub.last_notified_at = utcnow()
-                    n += 1
+                try:
+                    with db.begin_nested():
+                        user = db.scalar(select(User).where(User.tenant_id == tid, User.id == sub.created_by,
+                            User.is_active.is_(True), User.deleted_at.is_(None)))
+                        if user is None or "signal.manage" not in user.role.permission_codes:
+                            continue
+                        cursor = None
+                        matched = 0
+                        while True:
+                            query = select(BusinessSignal).where(BusinessSignal.detected_at <= now,
+                                BusinessSignal.detected_at >= sub.created_at - timedelta(hours=36),
+                                or_(BusinessSignal.expires_at.is_(None), BusinessSignal.expires_at > now))
+                            if cursor is not None:
+                                query = query.where(BusinessSignal.id > cursor)
+                            with bypass_tenant():
+                                batch = list(db.scalars(query.order_by(BusinessSignal.id).limit(200)))
+                            if not batch:
+                                break
+                            cursor = batch[-1].id
+                            for sig in batch:
+                                if not match(sub, sig) or db.scalar(select(SignalDelivery.id).where(
+                                    SignalDelivery.tenant_id == tid, SignalDelivery.subscription_id == sub.id,
+                                    SignalDelivery.signal_id == sig.id)):
+                                    continue
+                                prior = db.scalar(select(SignalDelivery.id).where(SignalDelivery.tenant_id == tid,
+                                    SignalDelivery.recipient_id == user.id, SignalDelivery.signal_id == sig.id).limit(1))
+                                if not prior:
+                                    notify(db, "N-39", [user.id], f"信号：{KINDS.get(sig.kind, sig.kind)}", sig.title,
+                                           object_type="business_signal", object_id=sig.id, action_url="/data-hub")
+                                db.add(SignalDelivery(subscription_id=sub.id, signal_id=sig.id, recipient_id=user.id))
+                                db.flush()
+                                matched += 1
+                        if matched:
+                            sub.hits = (sub.hits or 0) + matched
+                            sub.last_notified_at = now
+                    n += matched
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Signal subscription failed (%s)", type(exc).__name__)
             db.commit()
     return n
 

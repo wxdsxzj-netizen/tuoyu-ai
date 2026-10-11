@@ -150,7 +150,7 @@ def list_users(q: str | None = None, page: int = Query(1, ge=1), size: int = Que
     if q:
         stmt = stmt.where((User.email.ilike(f"%{q}%")) | (User.name.ilike(f"%{q}%")))
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
-    rows = db.scalars(stmt.order_by(User.created_at).offset((page - 1) * size).limit(size)).all()
+    rows = db.scalars(stmt.order_by(User.created_at, User.id).offset((page - 1) * size).limit(size)).all()
     return Page(items=[user_out(u) for u in rows], total=total)
 
 

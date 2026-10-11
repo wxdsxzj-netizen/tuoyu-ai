@@ -1,19 +1,21 @@
 """回复识别与处理（M7-06/07/12 的 MVP 子集）：退订关键词规则兜底（不依赖模型）、休假顺延、退信、不感兴趣冷却、同公司智能停止。"""
 import email
+import hashlib
 import json
 import re
 from datetime import datetime, timedelta
 from email.utils import parseaddr
 
 from dateutil import parser as dateparser
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.compliance.suppression import add_suppression, record_hard_bounce
 from app.core.db import utcnow
+from app.core.errors import AppError
 from app.data.normalize import normalize_email
 from app.llm.gateway import LLMError, get_gateway
-from app.models import Contact, Enrollment, InboundMessage, Mailbox, OutboundMessage
+from app.models import Contact, Enrollment, InboundMessage, InboundReceipt, Mailbox, OutboundMessage
 from app.outreach import health
 from app.outreach.engine import LIVE, event
 from app.outreach.reply_text import authored_subject, authored_text, body_parts, delivery_status, mime_authored_text, original_message_ids
@@ -125,7 +127,51 @@ def _same_company(db, e: Enrollment, action: str, reason: str):
     return n
 
 
-def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_reply_to: str | None = None,
+def handle_inbound(db: Session, *, imap_uid=None, uid_validity=None, **kwargs) -> dict:
+    from app.outreach.intents import lock_tenant
+    lock_tenant(db)
+    db.flush()
+    mailbox = kwargs.get("mailbox")
+    mailbox_id = mailbox.id if mailbox else None
+    keys = []
+    if imap_uid is not None:
+        if not mailbox_id or not uid_validity or not 0 < imap_uid <= 4294967295:
+            raise AppError("COMMON_VALIDATION")
+        keys.append(("uid", f"{mailbox_id}:{uid_validity}:{imap_uid}"))
+    mid = (kwargs.get("header_message_id") or "").strip()
+    sender = normalize_email(parseaddr(kwargs["from_addr"])[1] or kwargs["from_addr"]) or ""
+    if mid and len(mid) <= 512:
+        keys.append(("header", f"{mailbox_id}:{sender}:{mid}"))
+    keys = [(kind, hashlib.sha256(f"{kind}:{value}".encode()).hexdigest()) for kind, value in keys]
+    found = {}
+    for kind, key in keys:
+        old = db.scalar(select(InboundReceipt).where(InboundReceipt.key_hash == key))
+        if old:
+            found[kind] = old
+    old = found.get("uid") or found.get("header")
+    # Existing Message-IDs predate receipt storage; do not repeat classification or business effects on rollout.
+    historical = None
+    if not old and mid and len(mid) <= 512:
+        from app.models import Conversation, Message
+        msg = db.scalar(select(Message).join(Conversation, Conversation.id == Message.conversation_id).where(
+            func.trim(Message.header_message_id) == mid, func.lower(Message.from_email) == sender,
+            Message.direction == "in", Conversation.mailbox_id == mailbox_id).order_by(Message.created_at).limit(1))
+        if msg:
+            historical = {"inbound_id": None, "category": msg.category or "other", "confidence": msg.confidence,
+                "needs_human": False, "action": "already_recorded", "enrollment_id": None,
+                "conversation_id": str(msg.conversation_id), "message_id": str(msg.id), "handoff_id": None, "inquiry_id": None}
+    kwargs["header_message_id"] = mid if mid and len(mid) <= 512 else None
+    result = dict(old.result) if old else historical or _handle_inbound(db, **kwargs)
+    for kind, key in keys:
+        if kind in found or ("uid" in found and kind == "header"):
+            continue
+        db.add(InboundReceipt(mailbox_id=mailbox_id, key_hash=key,
+            uid_validity=uid_validity if kind == "uid" else None, uid=imap_uid if kind == "uid" else None, result=result))
+    db.flush()
+    return {**result, "duplicate": bool(old or historical)}
+
+
+def _handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_reply_to: str | None = None,
                    references: str | None = None, mailbox: Mailbox | None = None, now: datetime | None = None,
                    header_message_id: str | None = None, authored_body: str | None = None, dsn_status: list | None = None) -> dict:
     now = now or utcnow()
@@ -145,6 +191,7 @@ def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_r
                              from_email=sender, subject=(subject or "")[:512], body=(body or "")[:20000], in_reply_to=in_reply_to,
                              category=cat, confidence=conf, classified_by=by, needs_human=conf < 0.8)
     db.add(inbound)
+    db.flush()
     mb = db.get(Mailbox, om.mailbox_id) if om else mailbox
     contact = db.get(Contact, e.contact_id) if e else None
     action = "logged"
@@ -157,7 +204,7 @@ def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_r
         elif next(iter(evidence))[0] == "failed" and next(iter(evidence))[1] in PERMANENT_DESTINATION:
             if om.status == "hard_bounce":
                 db.flush()
-                return {"category": cat, "confidence": conf, "action": "already_recorded",
+                return {"inbound_id": str(inbound.id), "category": cat, "confidence": conf, "action": "already_recorded",
                         "enrollment_id": str(e.id) if e else None}
             record_hard_bounce(db, email=om.to_email, source_ref="dsn")
             om.status = "hard_bounce"
@@ -179,7 +226,8 @@ def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_r
         else:
             inbound.needs_human, action = True, "needs_review"
         db.flush()
-        return {"category": cat, "confidence": conf, "action": action, "enrollment_id": str(e.id) if e else None}
+        return {"inbound_id": str(inbound.id), "category": cat, "confidence": conf, "action": action,
+                "enrollment_id": str(e.id) if e else None}
     if mb and e:
         health.today_metric(db, mb).replies += 1
     if cat == "unsubscribe":
@@ -241,11 +289,12 @@ def handle_inbound(db: Session, *, from_addr: str, subject: str, body: str, in_r
         inq = inquiry_mod.on_inbound(db, conv, msg, contact, now=now) if not e else None  # 非序列来信 = 询盘：评分 + 分配 + SLA
         iid = str(inq.id) if inq else None
         if not inq or inq.status != "pending_review":  # D 级待复核前不生成交付包
-            h = handoff_mod.create(db, conv, e, contact, cat, now=now)
+            h = handoff_mod.create(db, conv, e, contact, cat, now=now, inquiry=inq)
             hid = str(h.id)
             if inq:
                 inq.handoff_id = h.id
-    return {"category": cat, "confidence": conf, "needs_human": conf < 0.8, "action": action, "enrollment_id": str(e.id) if e else None,
+    return {"inbound_id": str(inbound.id), "category": cat, "confidence": conf, "needs_human": conf < 0.8, "action": action,
+            "enrollment_id": str(e.id) if e else None,
             "conversation_id": str(conv.id), "message_id": str(msg.id), "handoff_id": hid, "inquiry_id": iid}
 
 
@@ -265,27 +314,53 @@ def _text_of(msg) -> str:
 
 
 def poll_mailbox(db: Session, mb: Mailbox, conn=None) -> int:
-    """IMAP 拉取 UID > imap_last_uid 的新邮件。conn 可注入（测试）。"""
+    """Serialize each mailbox, detect UID epochs, and never advance past an unread response."""
     from app.outreach.transport import imap_connect
+    key = int.from_bytes(hashlib.sha256(f"imap:{mb.tenant_id}:{mb.id}".encode()).digest()[:8], signed=True)
+    if not db.scalar(select(func.pg_try_advisory_xact_lock(key))):
+        return 0
+    if not db.is_modified(mb):
+        db.refresh(mb)
     c = conn or imap_connect(mb)
     try:
-        c.select("INBOX")
+        typ, _ = c.select("INBOX")
+        if typ != "OK":
+            raise AppError("COMMON_INVALID_STATE", message="IMAP SELECT failed")
+        _, values = c.response("UIDVALIDITY")
+        try:
+            epoch = int(values[0])
+            if not 0 < epoch <= 4294967295:
+                raise ValueError
+        except (TypeError, IndexError, ValueError) as exc:
+            raise AppError("COMMON_INVALID_STATE", message="IMAP UIDVALIDITY missing or invalid") from exc
+        if mb.imap_uid_validity is None and mb.imap_last_uid:
+            mb.imap_poll_error = f"Legacy UID cursor has no epoch; review baseline before adopting UIDVALIDITY {epoch}"
+            db.flush()
+            return 0
+        if mb.imap_uid_validity != epoch:
+            mb.imap_uid_validity, mb.imap_last_uid = epoch, 0
         typ, data = c.uid("search", None, f"UID {mb.imap_last_uid + 1}:*")
-        uids = [int(u) for u in (data[0] or b"").split() if int(u) > mb.imap_last_uid]
+        if typ != "OK" or not data or data[0] is None:
+            raise AppError("COMMON_INVALID_STATE", message="IMAP SEARCH failed")
+        uids = sorted({int(u) for u in data[0].split() if mb.imap_last_uid < int(u) <= 4294967295})
         n = 0
-        for uid in sorted(uids):
-            typ, msgdata = c.uid("fetch", str(uid), "(RFC822)")
-            raw = next((x[1] for x in msgdata if isinstance(x, tuple)), None)
-            if raw:
-                msg = email.message_from_bytes(raw)
-                body = _text_of(msg)
-                refs = " ".join([msg.get("References", ""), *original_message_ids(msg)])
-                handle_inbound(db, from_addr=msg.get("From", ""), subject=str(msg.get("Subject", "")), body=body,
-                               header_message_id=msg.get("Message-ID"),
-                               in_reply_to=msg.get("In-Reply-To"), references=refs, mailbox=mb,
-                               authored_body=mime_authored_text(msg, body), dsn_status=delivery_status(body, msg))
-                n += 1
+        mb.imap_poll_error = None
+        for uid in uids:
+            typ, msgdata = c.uid("fetch", str(uid), "(BODY.PEEK[])")
+            raw = next((x[1] for x in msgdata or [] if isinstance(x, tuple) and isinstance(x[1], bytes)), None)
+            if typ != "OK" or not raw:
+                mb.imap_poll_error = f"IMAP fetch incomplete at UID {uid}; will retry"
+                break
+            msg = email.message_from_bytes(raw)
+            body = _text_of(msg)
+            refs = " ".join([msg.get("References", ""), *original_message_ids(msg)])
+            result = handle_inbound(db, from_addr=msg.get("From", ""), subject=str(msg.get("Subject", "")), body=body,
+                header_message_id=msg.get("Message-ID"), in_reply_to=msg.get("In-Reply-To"), references=refs, mailbox=mb,
+                authored_body=mime_authored_text(msg, body), dsn_status=delivery_status(body, msg),
+                imap_uid=uid, uid_validity=epoch)
+            n += not result["duplicate"]
             mb.imap_last_uid = uid
+        db.flush()
         return n
     finally:
         if conn is None:

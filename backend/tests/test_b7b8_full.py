@@ -1,5 +1,6 @@
 """B7/B8 完整测试：独立站/SEO、种子、预热、OAuth、Webhook 不外发、API Key、按合格商机付费、电话/Meta/IM/ERP、隔离与权限。"""
 import io
+import secrets
 import uuid
 
 import pytest
@@ -103,10 +104,10 @@ def test_oauth_flow_stub_and_config(client, owner, monkeypatch):
     h = owner
     assert client.get(f"{P}/mailboxes/oauth/yahoo:start", headers=h).status_code >= 400
     s = client.get(f"{P}/mailboxes/oauth/google:start", headers=h).json()
-    assert s["stub"] is True and s["authorize_url"] is None and "gmail.send" in s["scopes"] and s["next_steps"]
+    assert s["stub"] is True and s["authorize_url"] is None and "https://mail.google.com/" in s["scopes"] and s["next_steps"]
     monkeypatch.setattr(get_settings(), "google_oauth_client_id", "cid-123")
     s2 = client.get(f"{P}/mailboxes/oauth/google:start", headers=h).json()
-    assert s2["stub"] is False and "client_id=cid-123" in s2["authorize_url"] and s2["state"]
+    assert s2["stub"] is True and s2["authorize_url"] is None and s2["status"] == "unavailable"
     assert client.post(f"{P}/mailboxes/oauth/google:callback", headers=h).status_code == 503
     mb = client.post(f"{P}/mailboxes/oauth/google:complete-stub", headers=h, json={"email": "g@nbvalve.com"}).json()
     lst = client.get(f"{P}/mailboxes", headers=h).json()
@@ -294,8 +295,9 @@ def test_im_erp_success_and_subprocessor_notice(client, owner, monkeypatch):
     assert client.get(f"{P}/erp/connections", headers=sh).status_code == 403
     assert client.get(f"{P}/academy", headers=sh).status_code == 200  # 所有人可读学院
     assert client.post(f"{P}/feedback", headers=sh, json={"title": "t", "body": "b"}).status_code == 200
-    monkeypatch.setattr(get_settings(), "platform_admin_token", "plat-secret")
-    PH = {"X-Platform-Admin-Token": "plat-secret"}
+    platform_token = secrets.token_urlsafe(32)
+    monkeypatch.setattr(get_settings(), "platform_admin_token", platform_token)
+    PH = {"X-Platform-Admin-Token": platform_token}
     assert client.post(f"{P}/platform/subprocessors/notices", json={"change": "added", "detail": "x"}).status_code in (401, 403)
     n = client.post(f"{P}/platform/subprocessors/notices", headers=PH, json={"change": "added", "detail": "新增 Mailgun（欧盟）"}).json()
     assert n["notified_tenants"] >= 1

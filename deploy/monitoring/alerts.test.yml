@@ -1,0 +1,84 @@
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+tests:
+  - name: never-successful-backup
+    interval: 1m
+    input_series:
+      - series: 'up{job="node",instance="synthetic-node:9100"}'
+        values: '1+0x40'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: BackupMissing
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: BackupMissing
+        exp_alerts:
+          - exp_labels: {job: node, instance: 'synthetic-node:9100', severity: warning}
+            exp_annotations: {summary: '备份成功状态缺失或超过26小时未更新，请检查备份任务及textfile收集器'}
+  - name: recent-success
+    interval: 1m
+    input_series:
+      - series: 'up{job="node",instance="synthetic-node:9100"}'
+        values: '1+0x40'
+      - series: 'node_textfile_backup_last_success_timestamp{job="node",instance="synthetic-node:9100"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: BackupMissing
+        exp_alerts: []
+  - name: stale-success
+    interval: 1m
+    input_series:
+      - series: 'up{job="node",instance="synthetic-node:9100"}'
+        values: '1+0x1620'
+      - series: 'node_textfile_backup_last_success_timestamp{job="node",instance="synthetic-node:9100"}'
+        values: '0+0x1620'
+    alert_rule_test:
+      - eval_time: 26h29m
+        alertname: BackupMissing
+        exp_alerts: []
+      - eval_time: 26h31m
+        alertname: BackupMissing
+        exp_alerts:
+          - exp_labels: {job: node, instance: 'synthetic-node:9100', severity: warning}
+            exp_annotations: {summary: '备份成功状态缺失或超过26小时未更新，请检查备份任务及textfile收集器'}
+  - name: another-node-missing
+    interval: 1m
+    input_series:
+      - series: 'up{job="node",instance="node-one:9100"}'
+        values: '1+0x40'
+      - series: 'up{job="node",instance="node-two:9100"}'
+        values: '1+0x40'
+      - series: 'node_textfile_backup_last_success_timestamp{job="node",instance="node-one:9100"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: BackupMissing
+        exp_alerts:
+          - exp_labels: {job: node, instance: 'node-two:9100', severity: warning}
+            exp_annotations: {summary: '备份成功状态缺失或超过26小时未更新，请检查备份任务及textfile收集器'}
+  - name: first-success-resolves-alert
+    interval: 1m
+    input_series:
+      - series: 'up{job="node",instance="synthetic-node:9100"}'
+        values: '1+0x40'
+      - series: 'node_textfile_backup_last_success_timestamp{job="node",instance="synthetic-node:9100"}'
+        values: '_x31 1860+60x10'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: BackupMissing
+        exp_alerts:
+          - exp_labels: {job: node, instance: 'synthetic-node:9100', severity: warning}
+            exp_annotations: {summary: '备份成功状态缺失或超过26小时未更新，请检查备份任务及textfile收集器'}
+      - eval_time: 32m
+        alertname: BackupMissing
+        exp_alerts: []
+  - name: node-scrape-configuration-missing
+    interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: BackupMissing
+        exp_alerts:
+          - exp_labels: {job: node, severity: warning}
+            exp_annotations: {summary: '备份成功状态缺失或超过26小时未更新，请检查备份任务及textfile收集器'}

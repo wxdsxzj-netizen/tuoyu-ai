@@ -117,10 +117,10 @@ def _to_inbox(db, w, contact, subject, body, channel, owner=None):
         inq.source_channel = channel
         if owner and inq.status != "pending_review" and inq.assignee_id != owner:  # 组件路由优先于通用分配规则
             inq.assignee_id, inq.assigned_by = owner, "rule"
-            conv.assignee_id = owner
+            inquiry_mod.sync_assignee(db, inq, owner)
     hid = None
     if not inq or inq.status != "pending_review":
-        h = handoff_mod.create(db, conv, None, contact, "inquiry")
+        h = handoff_mod.create(db, conv, None, contact, "inquiry", inquiry=inq)
         hid = str(h.id)
         if inq:
             inq.handoff_id = h.id
@@ -231,14 +231,23 @@ def _escalate(db, w, s, text, reason):
 
 def staff_reply(db: Session, s: WidgetSession, text: str, user) -> dict:
     """业务员在聊天里回复：只写入会话，访客页面轮询看到；不发邮件。"""
+    from app.outreach.intents import lock_tenant
+    lock_tenant(db)
+    db.refresh(s, with_for_update=True)
+    now = utcnow()
     msgs = list(s.messages or [])
-    m = {"from": "agent", "name": user.name, "text": text[:2000], "at": utcnow().isoformat()}
+    m = {"from": "agent", "name": user.name, "text": text[:2000], "at": now.isoformat()}
     msgs.append(m)
     s.messages, s.mode = msgs, "human"
     if s.conversation_id:
         from app.models import Message
         db.add(Message(conversation_id=s.conversation_id, direction="out", from_email=user.email, subject="[在线聊天]", body=text[:2000],
-                       sent_by="chat", user_id=user.id, status="in_widget"))
+                       sent_by="chat", user_id=user.id, status="in_widget", created_at=now))
+        from app.inbox.service import on_reply_delivered
+        from app.models import Conversation
+        conv = db.get(Conversation, s.conversation_id)
+        if conv and not conv.deleted_at:
+            on_reply_delivered(db, conv, now)
     db.flush()
     return m
 

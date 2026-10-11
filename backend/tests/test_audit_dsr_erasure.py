@@ -4,6 +4,7 @@ import uuid
 import zipfile
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
 from app.core.config import get_settings
@@ -276,3 +277,90 @@ def test_known_shared_source_needs_platform_review_and_is_not_changed(client):
     assert client.post(f"{P}/dsr/{rid}:complete", headers=auth, json={}).status_code == 409
     with SessionLocal() as db:
         assert db.scalar(select(GlobalContact).where(GlobalContact.gid == gid)).email == EMAIL
+
+
+@pytest.mark.parametrize("failure", ["io", "sql"])
+def test_partial_export_after_write_failure_is_erased_before_dsr_completion(client, tmp_path, monkeypatch, failure):
+    monkeypatch.setattr(get_settings(), 'upload_dir', str(tmp_path))
+    auth, tid, uid = tenant(client, 1)
+    seed(tid)
+    written = zipfile.ZipFile.writestr
+    def fail_after_contacts(z, name, data, *args, **kw):
+        if name == 'contacts.csv':
+            assert EMAIL in z.read('contacts.json').decode()
+            if failure == 'sql':
+                from sqlalchemy import text
+                db.execute(text('SELECT 1 / 0'))
+            raise OSError('synthetic disk failure')
+        return written(z, name, data, *args, **kw)
+    with tenant_context(tid), SessionLocal() as db:
+        ex = DataExport(requested_by=uid, scope=['contacts'])
+        db.add(ex)
+        db.flush()
+        with monkeypatch.context() as patch:
+            patch.setattr(zipfile.ZipFile, 'writestr', fail_after_contacts)
+            export.build(db, ex)
+        assert ex.status == 'failed' and ex.file_path is None
+        assert not list((tmp_path / 'exports').iterdir())
+        db.commit()
+    rid = request(client, auth)
+    assert client.post(f'{P}/dsr/{rid}:execute', headers=auth, json={}).status_code == 200
+    done = client.post(f'{P}/dsr/{rid}:complete', headers=auth, json={})
+    assert done.status_code == 200, done.text
+    assert not list((tmp_path / 'exports').iterdir()), 'failed export still contains personal data'
+
+
+def test_erasure_removes_unregistered_managed_final_and_partial_files_only_in_its_tenant(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(get_settings(), 'upload_dir', str(tmp_path))
+    auth, tid, uid = tenant(client, 1)
+    _, other, _ = tenant(client, 2)
+    seed(tid)
+    root = tmp_path / 'exports'
+    root.mkdir()
+    eid = uuid.uuid4()  # Simulate process termination before DB path/status commit, including a rolled-back export row.
+    orphan = root / f'{tid}-{eid}.zip'
+    partial = root / f'.{tid}-{eid}.{uuid.uuid4().hex}.tmp'
+    foreign = root / f'{other}-{uuid.uuid4()}.zip'
+    for p in (orphan, partial, foreign):
+        p.write_text(EMAIL)
+    rid = request(client, auth)
+    assert client.post(f'{P}/dsr/{rid}:execute', headers=auth, json={}).status_code == 200
+    assert client.post(f'{P}/dsr/{rid}:complete', headers=auth, json={}).status_code == 200
+    assert not orphan.exists() and not partial.exists()
+    assert foreign.read_text() == EMAIL
+
+
+def test_orphan_symlink_requires_review_without_deleting_target(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(get_settings(), 'upload_dir', str(tmp_path))
+    auth, tid, uid = tenant(client, 1)
+    seed(tid)
+    root = tmp_path / 'exports'
+    root.mkdir()
+    outside = tmp_path / 'unrelated.txt'
+    outside.write_text('do not delete')
+    link = root / f'{tid}-{uuid.uuid4()}.zip'
+    link.symlink_to(outside)
+    rid = request(client, auth)
+    result = client.post(f'{P}/dsr/{rid}:execute', headers=auth, json={})
+    assert result.status_code == 409, result.text
+    assert client.post(f'{P}/dsr/{rid}:complete', headers=auth, json={}).status_code == 409
+    assert link.is_symlink() and outside.read_text() == 'do not delete'
+
+
+def test_legacy_relative_managed_export_path_remains_cleanable(client, tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(get_settings(), 'upload_dir', str(tmp_path))
+    auth, tid, uid = tenant(client, 1)
+    root = tmp_path / 'exports'
+    root.mkdir()
+    with tenant_context(tid), SessionLocal() as db:
+        ex = DataExport(requested_by=uid, status='failed')
+        db.add(ex)
+        db.flush()
+        path = root / f'{tid}-{ex.id}.zip'
+        path.write_text(EMAIL)
+        ex.file_path = os.path.relpath(path)
+        db.commit()
+    rid = request(client, auth)
+    assert client.post(f'{P}/dsr/{rid}:execute', headers=auth, json={}).status_code == 200
+    assert not path.exists()

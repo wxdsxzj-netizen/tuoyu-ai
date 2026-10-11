@@ -95,66 +95,85 @@ def confirm(db: Session, t: AgentTask, user) -> AgentTask:
         raise AppError("AGENT_BUDGET_EXCEEDED", details={"estimate_high": hi, "budget": t.budget})
     credits.hold(db, t.id, hi, user.id)  # BR-13-06：按上限预占
     t.credits_held = hi
-    running = db.scalar(select(func.count()).select_from(AgentTask).where(AgentTask.status == "running")) or 0
-    if running >= MAX_RUNNING:  # BR-12-09
-        t.status = "queued"
-        return t
-    t.status = "running"
-    run(db, t, user)
+    t.status = "queued"
     return t
 
 
 def run(db: Session, t: AgentTask, user) -> AgentTask:
-    plan = t.plan or []
-    failed_any = False
-    while t.current_step < len(plan):
-        db.flush()
-        db.refresh(t, ["status"])  # 允许其他请求在步骤之间暂停 / 取消
-        if t.status != "running":
+    from app.agent import queue
+    from app.models import User
+    task_id, token = t.id, t.execution_token
+    while True:
+        db.expire_all()
+        t = queue.current(db, task_id, token)
+        if queue.apply_control(db, t):
             return t
-        st = plan[t.current_step]
+        if t.current_step >= len(t.plan or []):
+            failed = db.scalar(select(AgentStepLog.id).where(AgentStepLog.task_id == t.id,
+                               AgentStepLog.status.in_(("failed", "skipped"))).limit(1))
+            return _finish(db, t, "partial" if failed else "completed")
+        user = db.get(User, t.created_by)
+        st = t.plan[t.current_step]
         no, tool = st["no"], st["tool"]
-        if st.get("forbidden"):
-            _log(db, t, no, tool, "skipped", out={"reason": "AGENT_TOOL_FORBIDDEN：超出你的权限"}, actor=user.id)
-            failed_any = True
-            if tool in CRITICAL:
-                return _finish(db, t, "failed")
-            t.current_step += 1
-            continue
-        if st.get("approval") and not st.get("approved"):
+        if (not user or not user.is_active or user.status != "active" or user.deleted_at
+                or "agent.run" not in user.role.permission_codes or tool not in REGISTRY
+                or REGISTRY[tool]["perm"] not in user.role.permission_codes):
+            _log(db, t, no, tool, "skipped", out={"reason": "AGENT_TOOL_FORBIDDEN"})
+            return _finish(db, t, "failed")
+        if needs_approval(tool, t.effective_autonomy) and not st.get("approved"):
             t.status = "waiting_approval"
-            t.pending_approval = {"step": no, "tool": tool, "zh": st["zh"], "qty": len((t.context or {}).get("contact_ids", [])) or st["qty"]}  # noqa: E501
-            notify(db, "N-11", [u.id for u in users_with(db, "agent.approve")], "Agent 任务等待审批", f"{st['zh']}：{t.input_text[:40]}",
+            t.execution_token = t.lease_until = None
+            t.pending_approval = {"step": no, "tool": tool, "zh": st["zh"],
+                                  "qty": len((t.context or {}).get("contact_ids", [])) or st["qty"]}
+            notify(db, "N-11", [u.id for u in users_with(db, "agent.approve")], "Agent 任务等待审批", t.input_text[:40],
                    object_type="agent_task", object_id=t.id, action_url="/agent", level="info")
             return t
-        before = _used(db, t)
-        t0 = time.monotonic()
+        record = queue.prepare(db, t, st)
+        if record is None:
+            return t
+        t = queue.current(db, task_id, token)
+        # A control can arrive between the durable marker and actual tool dispatch.
+        if queue.apply_control(db, t):
+            record.state = "prepared"
+            return t
+        before, started = _used(db, t), time.monotonic()
         try:
             ctx_add, out = EXEC[tool](db, t, st, user)
             t.context = {**(t.context or {}), **ctx_add}
+            db.flush()
             status = "ok"
-        except AppError as e:
-            out, status = {"error": e.code}, "failed"
-        except Exception as e:  # noqa: BLE001 —— 不可重试错误：本步骤失败
-            out, status = {"error": type(e).__name__, "detail": str(e)[:200]}, "failed"
-        used = _used(db, t) - before
-        t.credits_used = round(_used(db, t), 2)
-        _log(db, t, no, tool, status, st.get("args"), out, round(used, 2), int((time.monotonic() - t0) * 1000), user.id)
+        except Exception as error:
+            # A SQL exception invalidates the transaction; rollback before ANY ledger/log query.
+            db.rollback()
+            t = queue.current(db, task_id, token)
+            record = queue.receipt(db, t, st)
+            code = error.code if isinstance(error, AppError) else type(error).__name__
+            if tool in queue.EXTERNAL_TOOLS:
+                record.state, record.error_code = "unknown", code
+                t.status, t.pause_reason = "paused", "outcome_unknown"
+                t.execution_token = t.lease_until = None
+                _log(db, t, no, tool, "unknown", out={"error": code}, actor=user.id)
+                queue.apply_control(db, t)
+                return t
+            out, status = {"error": code}, "failed"
+        used = _used(db, t)
+        t.credits_used = round(used, 2)
+        record.state = "completed" if status == "ok" else "failed"
+        _log(db, t, no, tool, status, st.get("args"), out, round(used - before, 2),
+             int((time.monotonic() - started) * 1000), user.id)
         t.current_step += 1
-        if status == "failed":
-            failed_any = True
-            if tool in CRITICAL:
-                return _finish(db, t, "failed")
+        if status == "failed" and tool in CRITICAL:
+            return _finish(db, t, "failed")
         from app.core.config import get_settings
         cfg = get_settings()
         ref = ((t.estimate or {}).get(cfg.agent_overrun_basis) or 0) * cfg.agent_overrun_ratio
-        acked = (t.context or {}).get("overrun_ack")
-        if ref > 0 and not acked and t.credits_used > ref + 1e-9 and t.current_step < len(plan):  # BR-12-02（参照可配置）
+        if ref > 0 and not (t.context or {}).get("overrun_ack") and used > ref + 1e-9 and t.current_step < len(t.plan):
             t.status, t.pause_reason = "paused", "over_estimate"
-            notify(db, "N-11", [t.created_by], "Agent 任务实际消耗超过预估，已自动暂停", t.input_text[:60], object_type="agent_task",
-                   object_id=t.id, action_url="/agent", level="warn")
+            t.execution_token = t.lease_until = None
+            notify(db, "N-11", [t.created_by], "Agent 任务实际消耗超过预估，已自动暂停", t.input_text[:60],
+                   object_type="agent_task", object_id=t.id, action_url="/agent", level="warn")
             return t
-    return _finish(db, t, "partial" if failed_any else "completed")
+        db.commit()  # Tool DB changes, cursor, receipt, log and billing settle together.
 
 
 def _used(db, t) -> float:
@@ -168,6 +187,7 @@ def _finish(db, t, status):
     credits.release(db, t.id, round(t.credits_held - t.credits_used, 2))
     t.credits_held = t.credits_used
     t.status, t.finished_at, t.pending_approval = status, utcnow(), None
+    t.execution_token = t.lease_until = None
     db.flush()
     return t
 
@@ -188,9 +208,9 @@ def decide(db: Session, t: AgentTask, user, approve: bool, note: str | None = No
         _log(db, t, st["no"], st["tool"], "rejected", out={"note": note}, actor=user.id)
         t.current_step += 1
     plan[idx] = st
-    t.plan, t.status, t.pending_approval = plan, "running", None
+    t.plan, t.status, t.pending_approval = plan, "queued", None
     db.flush()
-    return run(db, t, user)
+    return t
 
 
 def pause(db, t, reason="user"):
@@ -202,12 +222,15 @@ def pause(db, t, reason="user"):
 def resume(db, t, user):
     if t.status != "paused":
         raise AppError("COMMON_INVALID_STATE")
+    from app.agent.queue import UNKNOWN_REASONS
+    if t.pause_reason in UNKNOWN_REASONS:
+        raise AppError("COMMON_INVALID_STATE", details={"reason": "先核对未确认的执行结果，不能直接重试"})
     if t.pause_reason == "over_estimate" and credits.balance(db) <= 0:
         raise AppError("BILLING_INSUFFICIENT")
     if t.pause_reason == "over_estimate":  # 用户已知悉超出预估，本任务不再重复暂停（上限仍受预占约束）
         t.context = {**(t.context or {}), "overrun_ack": True}
-    t.status, t.pause_reason = "running", None
-    return run(db, t, user)
+    t.status, t.pause_reason = "queued", None
+    return t
 
 
 def cancel(db, t):

@@ -21,7 +21,8 @@ COUNTED = ("sending", "unknown", "sent", "hard_bounce", "soft_bounce")
 def lock_tenant(db):
     if current_tenant(db) is None:
         raise AppError("COMMON_FORBIDDEN")
-    db.scalar(select(Tenant).where(Tenant.id == current_tenant(db)).with_for_update())
+    # Serialize tenant mutations without conflicting with FK KEY SHARE locks from prior inserts.
+    db.scalar(select(Tenant).where(Tenant.id == current_tenant(db)).with_for_update(key_share=True))
 
 
 def slot(db, key):
@@ -125,7 +126,6 @@ def reconcile(db, intent, outcome):
         m.status, m.detail = "sent", {"manually_reconciled": True}
         intent.result_message_id = m.id
         health.today_metric(db, mb, om.sent_at.date()).sent_reply += 1
-        c.status, c.last_message_at, c.mode = "replied", om.sent_at, "human"
-        from app.crm.inquiry import on_first_response
-        on_first_response(db, c, om.sent_at)
+        from app.inbox.service import on_reply_delivered
+        on_reply_delivered(db, c, om.sent_at)
     intent.state, intent.last_error, om.status = "sent", None, "sent"

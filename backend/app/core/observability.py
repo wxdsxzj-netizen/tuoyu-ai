@@ -1,9 +1,12 @@
 """P6 可观测性：结构化 JSON 日志、Prometheus 指标（HTTP + 业务快照）、就绪检查。"""
 import json
 import logging
+import os
 import time
+from functools import lru_cache
+from pathlib import Path
 
-from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Histogram, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Histogram, generate_latest, multiprocess
 from prometheus_client.core import GaugeMetricFamily
 from sqlalchemy import text
 
@@ -84,18 +87,38 @@ REGISTRY.register(BusinessCollector())
 
 
 def metrics_payload() -> tuple[bytes, str]:
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        # DB snapshots are collected once, never summed across worker processes.
+        registry.register(BusinessCollector())
+        return generate_latest(registry), CONTENT_TYPE_LATEST
     return generate_latest(REGISTRY), CONTENT_TYPE_LATEST
+
+
+@lru_cache(maxsize=1)
+def expected_migrations() -> frozenset[str]:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    root = Path(__file__).resolve().parents[2]
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "alembic"))
+    return frozenset(ScriptDirectory.from_config(cfg).get_heads())
 
 
 def readiness() -> dict:
     from app.core.config import get_settings
     from app.core.db import engine
-    out = {"db": False, "redis": False, "migrations": None}
+    out = {"db": False, "redis": False, "migrations": None, "migrations_current": False, "expected_migrations": []}
     try:
         with engine.connect() as c:
             c.execute(text("select 1"))
             out["db"] = True
-            out["migrations"] = c.execute(text("select version_num from alembic_version")).scalar()
+            actual = frozenset(c.execute(text("select version_num from alembic_version")).scalars())
+            expected = expected_migrations()
+            out["migrations"] = ",".join(sorted(actual)) or None
+            out["expected_migrations"] = sorted(expected)
+            out["migrations_current"] = bool(expected and actual == expected)
     except Exception:  # noqa: BLE001
         pass
     try:

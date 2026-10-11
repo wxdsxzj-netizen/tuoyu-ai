@@ -4,7 +4,6 @@ Set CADDY_BIN to an installed Caddy executable. No Docker, ACME, or real API.
 """
 import http.server
 import os
-from pathlib import Path
 import shutil
 import socket
 import subprocess
@@ -14,7 +13,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-
+from pathlib import Path
 
 CADDY = os.environ.get("CADDY_BIN") or shutil.which("caddy")
 CONFIG = Path(__file__).resolve().parents[2] / "frontend/deploy/Caddyfile"

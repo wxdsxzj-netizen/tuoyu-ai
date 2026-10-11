@@ -156,6 +156,14 @@ def record_outbound(db: Session, *, om: OutboundMessage, owner_id=None, sent_by=
 def ingest_inbound(db: Session, *, peer: str, subject: str, body: str, header_message_id: str | None, refs: list[str],
                    category: str | None, confidence: float | None, contact: Contact | None, mailbox_id=None, enrollment_id=None,
                    owner_id=None) -> tuple[Conversation, Message]:
+    if header_message_id:
+        from app.outreach.intents import lock_tenant
+        lock_tenant(db)
+        old = db.scalar(select(Message).join(Conversation, Conversation.id == Message.conversation_id).where(
+            Message.header_message_id == header_message_id, Message.direction == "in", Message.from_email == peer,
+            Conversation.mailbox_id == mailbox_id).order_by(Message.created_at).limit(1))
+        if old:
+            return db.get(Conversation, old.conversation_id), old
     c = _conv_for(db, peer=peer, subject=subject, refs=refs, contact=contact, mailbox_id=mailbox_id, enrollment_id=enrollment_id,
                   owner_id=owner_id)
     lang = detect_lang(f"{subject} {body}")
@@ -349,13 +357,7 @@ def send_reply(db: Session, c: Conversation, *, body: str, user, subject: str | 
     db.add(m)
     if r.ok:
         health.today_metric(db, mb).sent_reply += 1
-        c.status, c.last_message_at, c.mode = "replied", now, "human"
-        from app.crm.inquiry import on_first_response
-        on_first_response(db, c, now)
-        if c.account_id:
-            a = db.get(Account, c.account_id)
-            if a:
-                a.last_valid_followup_at = now
+        on_reply_delivered(db, c, now)
     db.flush()
     intent.result_message_id = m.id
     state = "sent" if r.ok else ("unknown" if r.kind == "unknown" else "retryable")
@@ -367,3 +369,16 @@ def send_reply(db: Session, c: Conversation, *, body: str, user, subject: str | 
             raise AppError("DELIVERY_OUTCOME_UNKNOWN", details={"intent_id": str(intent.id)})
         raise AppError("INBOX_SEND_BLOCKED", details={"smtp": r.code, "kind": r.kind, "detail": r.detail})
     return m
+
+
+def on_reply_delivered(db: Session, c: Conversation, now=None) -> None:
+    """Successful human delivery only; caller commits delivery evidence and this transition together."""
+    now = now or utcnow()
+    c.status, c.mode = "replied", "human"
+    c.last_message_at = max(c.last_message_at or now, now)
+    from app.crm.inquiry import on_first_response
+    on_first_response(db, c, now)
+    if c.account_id:
+        a = db.get(Account, c.account_id)
+        if a:
+            a.last_valid_followup_at = max(a.last_valid_followup_at or now, now)

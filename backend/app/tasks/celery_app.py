@@ -14,6 +14,7 @@ celery_app.conf.update(
     beat_schedule={
         "sanctions-daily": {"task": "sanctions.refresh", "schedule": crontab(hour=10, minute=30)},
         "outreach-tick": {"task": "outreach.tick", "schedule": 600.0 if _SLOW else 60.0},
+        "agent-recover": {"task": "agent.recover", "schedule": 60.0},
         "imports-recover": {"task": "imports.recover", "schedule": 60.0},
         "mailbox-health": {"task": "mailbox.health", "schedule": 900.0},
         "mailbox-poll": {"task": "mailbox.poll", "schedule": 600.0 if _SLOW else 120.0},
@@ -27,6 +28,7 @@ celery_app.conf.update(
         "b4-hourly": {"task": "b4.hourly", "schedule": crontab(minute=20)},
         "b5-hourly": {"task": "b5.hourly", "schedule": crontab(minute=2)},
         "b4-daily": {"task": "b4.daily", "schedule": crontab(hour=1, minute=10)},
+        "reports-hourly": {"task": "reports.tick", "schedule": crontab(minute=0)},
         "b6-daily": {"task": "b6.daily", "schedule": crontab(hour=2, minute=15)},
         "b7-daily": {"task": "b7.daily", "schedule": crontab(hour=3, minute=20)},
     }, task_default_retry_delay=10, timezone="UTC", task_serializer="json",  # noqa: E501

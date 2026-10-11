@@ -15,8 +15,10 @@ from app.models import (
     Company,
     Contact,
     Conversation,
+    Handoff,
     Icp,
     Inquiry,
+    InquiryConversation,
     Message,
     Opportunity,
     TenantCompliance,
@@ -284,9 +286,7 @@ def _set(db, inq: Inquiry, uid, how, rule_id, now) -> str:
         inq.sla_minutes = SLA_MIN[inq.grade]
         inq.sla_due_at = add_business_minutes(now, SLA_MIN[inq.grade], _tz(db))
     inq.sla_alerts = []
-    conv = db.get(Conversation, inq.conversation_id)
-    if conv:
-        conv.assignee_id = uid
+    sync_assignee(db, inq, uid)
     if inq.grade == "A":  # N-02：A 级询盘到达，不可关闭
         notify(db, "N-02", [uid], f"A 级询盘：{inq.peer_email}", f"评分 {inq.score}，请在 1 个工作小时内首次响应", object_type="inquiry",
                object_id=inq.id, action_url="/inquiries", level="urgent")
@@ -328,24 +328,34 @@ def score(db: Session, inq: Inquiry, text: str) -> None:
 
 def on_inbound(db: Session, conv: Conversation, msg: Message, contact: Contact | None, now=None) -> Inquiry:
     """非序列来信的询盘：72 小时内同一买家（同邮箱 / 同企业域名）合并；否则新建 → 评分 → 分配（D 级进入待人工复核）。"""
+    from app.outreach.intents import lock_tenant
+    lock_tenant(db)
     now = now or utcnow()
     peer = (conv.peer_email or "").lower()
     dom = peer.split("@")[-1] if "@" in peer else None
     since = now - timedelta(hours=MERGE_HOURS)
-    q = select(Inquiry).where(Inquiry.created_at >= since, Inquiry.status.not_in(("closed", "merged", "converted")))
+    q = select(Inquiry).where(Inquiry.created_at >= since, Inquiry.deleted_at.is_(None),
+                              Inquiry.status.not_in(("closed", "merged", "converted")))
     if dom and dom not in FREE:
         q = q.where(Inquiry.peer_email.ilike(f"%@{dom}"))
     else:
         q = q.where(Inquiry.peer_email == peer)
-    ex = db.scalar(q.order_by(Inquiry.created_at).limit(1))
+    ex = db.scalar(q.order_by(Inquiry.created_at).limit(1).with_for_update().execution_options(populate_existing=True))
     if ex:
+        link_conversation(db, ex, conv, msg)
         ex.message_count += 1
+        score(db, ex, inquiry_text(db, ex))
+        if ex.grade == "D":
+            ex.status, ex.sla_due_at = "pending_review", None
+        sync_assignee(db, ex, ex.assignee_id)
+        db.flush()
         return ex
     tc_lang = msg.language
     inq = Inquiry(conversation_id=conv.id, account_id=conv.account_id, contact_id=contact.id if contact else None, peer_email=peer,
                   language=tc_lang, country=(contact.country if contact else None), status="scoring")
     db.add(inq)
     db.flush()
+    link_conversation(db, inq, conv, msg)
     text = f"{msg.subject or ''}\n{msg.body}"
     try:
         score(db, inq, text)
@@ -373,26 +383,35 @@ def review(db: Session, inq: Inquiry, genuine: bool, reason: str | None, user) -
         inq.status, inq.closed_reason = "closed", reason or "invalid"
         return inq
     conv = db.get(Conversation, inq.conversation_id)
-    last = db.scalar(select(Message).where(Message.conversation_id == conv.id, Message.direction == "in").order_by(Message.created_at.desc()).limit(1))  # noqa: E501
-    assign(db, inq, last.body if last else "")
+    assign(db, inq, inquiry_text(db, inq))
+    if inq.first_response_at:
+        inq.status = "responded"
     from app.crm import handoff as hmod
-    h = hmod.create(db, conv, None, db.get(Contact, inq.contact_id) if inq.contact_id else None, conv.last_category or "inquiry")
+    h = hmod.create(db, conv, None, db.get(Contact, inq.contact_id) if inq.contact_id else None,
+                    conv.last_category or "inquiry", inquiry=inq)
     inq.handoff_id = h.id
     return inq
 
 
 def on_first_response(db: Session, conv: Conversation, now=None) -> None:
-    inq = db.scalar(select(Inquiry).where(Inquiry.conversation_id == conv.id, Inquiry.status == "assigned"))
-    if inq and not inq.first_response_at:
-        inq.first_response_at, inq.status = now or utcnow(), "responded"
+    ids = select(InquiryConversation.inquiry_id).where(InquiryConversation.conversation_id == conv.id)
+    for inq in db.scalars(select(Inquiry).where(
+            (Inquiry.conversation_id == conv.id) | Inquiry.id.in_(ids), Inquiry.status == "assigned",
+            Inquiry.created_at <= (now or utcnow()))
+            .with_for_update().execution_options(populate_existing=True)):
+        if not inq.first_response_at:
+            inq.first_response_at, inq.status = now or utcnow(), "responded"
 
 
 def sla_tick(db: Session, now=None) -> dict:
     """BR-8-03：超时 50% 提醒归属人；100% 提醒经理；150% 自动改派（最多 2 次），之后进共享池并通知经理。"""
+    from app.outreach.intents import lock_tenant
+    lock_tenant(db)
     now = now or utcnow()
     tz = _tz(db)
     out = {"remind_owner": 0, "remind_manager": 0, "reassigned": 0, "pooled": 0}
-    for inq in list(db.scalars(select(Inquiry).where(Inquiry.status == "assigned", Inquiry.sla_minutes.is_not(None)))):
+    for inq in list(db.scalars(select(Inquiry).where(Inquiry.status == "assigned", Inquiry.sla_minutes.is_not(None))
+                               .with_for_update().execution_options(populate_existing=True))):
         used = business_minutes_between(inq.assigned_at, now, tz)
         pct = used / inq.sla_minutes
         alerts = list(inq.sla_alerts or [])
@@ -445,3 +464,36 @@ def grab(db: Session, inq: Inquiry, user, now=None) -> Inquiry:
         raise AppError("COMMON_FORBIDDEN")
     _set(db, inq, user.id, "grab", None, now)
     return inq
+
+
+def link_conversation(db, inq, conv, msg):
+    ex = db.scalar(select(InquiryConversation).where(
+        InquiryConversation.inquiry_id == inq.id, InquiryConversation.conversation_id == conv.id))
+    if not ex:
+        db.add(InquiryConversation(inquiry_id=inq.id, conversation_id=conv.id, first_message_at=msg.created_at))
+        db.flush()
+
+
+def conversation_ids(db, inq):
+    return list(dict.fromkeys([inq.conversation_id, *db.scalars(select(InquiryConversation.conversation_id)
+                .where(InquiryConversation.inquiry_id == inq.id))]))
+
+
+def messages(db, inq):
+    return list(db.scalars(select(Message).join(InquiryConversation,
+        InquiryConversation.conversation_id == Message.conversation_id).where(
+        InquiryConversation.inquiry_id == inq.id, Message.created_at >= InquiryConversation.first_message_at,
+        Message.direction != "note").order_by(Message.created_at, Message.id)))
+
+
+def inquiry_text(db, inq):
+    return "\n".join(f"{m.subject or ''}\n{m.body}" for m in messages(db, inq) if m.direction == "in")
+
+
+def sync_assignee(db, inq, uid):
+    for conv in db.scalars(select(Conversation).where(Conversation.id.in_(conversation_ids(db, inq)))):
+        conv.assignee_id = uid
+    if inq.handoff_id:
+        handoff = db.get(Handoff, inq.handoff_id)
+        if handoff and handoff.status == "pending":
+            handoff.assignee_id = uid

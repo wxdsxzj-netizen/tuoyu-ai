@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button, Card, Col, Descriptions, Drawer, Input, Modal, Row, Select, Space, Statistic, Table, Tabs, Tag, message } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
+import { useServerPage, PageError } from '../useServerPage'
 
 const REASONS = ['not_genuine', 'unclear', 'not_icp', 'duplicate', 'existing_customer', 'competitor', 'other']
 const NEEDS = ['product', 'quantity', 'use', 'timing']
@@ -10,15 +11,13 @@ const NEEDS = ['product', 'quantity', 'use', 'timing']
 export default function HandoffsPage() {
   const { t } = useTranslation()
   const [status, setStatus] = useState('pending')
-  const [rows, setRows] = useState<any[]>([])
+  const page = useServerPage('/handoffs', { status })
+  const { rows, reload } = page
   const [stats, setStats] = useState<any>()
   const [view, setView] = useState<any>()
   const [rej, setRej] = useState<{ reason?: string; note?: string } | null>(null)
-  const load = useCallback(async () => {
-    const [a, b] = await Promise.all([api.get('/handoffs', { params: { status, size: 100 } }), api.get('/handoffs/stats')])
-    setRows(a.data.items); setStats(b.data)
-  }, [status])
-  useEffect(() => { load() }, [load])
+  const load = useCallback(async () => { reload(); setStats((await api.get('/handoffs/stats')).data) }, [reload])
+  useEffect(() => { api.get('/handoffs/stats').then(r => setStats(r.data)) }, [])
   const open = async (id: string) => setView((await api.get(`/handoffs/${id}`)).data)
   const accept = async () => {
     const r = await api.post(`/handoffs/${view.handoff.id}:accept`)
@@ -41,7 +40,8 @@ export default function HandoffsPage() {
         <Col span={4}><Card size="small"><Statistic title={t('p4.hs_expired')} value={stats?.expired ?? 0} /></Card></Col>
       </Row>
       <Tabs activeKey={status} onChange={setStatus} items={['pending', 'accepted', 'rejected', 'expired'].map((s) => ({ key: s, label: t(`p4.hs_${s}`) }))} />
-      <Table rowKey="id" size="small" dataSource={rows} columns={[
+      <PageError page={page} />
+      <Table loading={page.loading} pagination={page.pagination} rowKey="id" size="small" dataSource={rows} columns={[
         { title: t('p4.summary'), dataIndex: 'summary', render: (v: string, r: any) => <a onClick={() => open(r.id)}>{v || '—'}</a> },
         { title: t('p3.category'), dataIndex: 'category', render: (v: string) => <Tag color="green">{t(`p3.rc_${v}`, { defaultValue: v })}</Tag> },
         { title: t('p4.needs'), dataIndex: 'needs', render: (n: any) => <Space size={2} wrap>{NEEDS.map((k) => <Tag key={k} color={n?.[k] ? 'blue' : 'default'}>{t(`p4.need_${k}`)}</Tag>)}</Space> },

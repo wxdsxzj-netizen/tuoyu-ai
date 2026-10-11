@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Form, Input, InputNumber, Modal, Select, Switch, Table, Tabs, Tag, Upload, message } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
@@ -14,24 +14,51 @@ function ProductList({ manage }: { manage: boolean }) {
   const [edit, setEdit] = useState<any>()
   const [detail, setDetail] = useState<any>()
   const [form] = Form.useForm()
+  const [skuForm] = Form.useForm()
+  const [skuEdit, setSkuEdit] = useState<any>()
+  const [saving, setSaving] = useState(false)
+  const busy = useRef(false)
+  const { can } = useAuth()
+  const floor = can('price.floor')
+  const editProduct = (row: any) => { form.resetFields(); form.setFieldsValue(row); setEdit(row) }
+  const editSku = (row: any) => { skuForm.resetFields(); skuForm.setFieldsValue({ unit: 'pcs', currency: 'USD', tier_prices: [], ...row }); setSkuEdit(row) }
   const load = () => { api.get('/products', { params: { q: q || undefined } }).then(r => setRows(r.data)) }
   useEffect(load, [q])
   const save = async () => {
-    const v = await form.validateFields()
-    const body = { ...v, certifications: (v.certifications || []), params: {} }
-    if (edit?.id) await api.put(`/products/${edit.id}`, { ...edit, ...body }); else await api.post('/products', body)
-    message.success(t('b2.saved')); setEdit(undefined); load()
+    if (busy.current) return
+    busy.current = true; setSaving(true)
+    try {
+      const v = await form.validateFields()
+      const body = { ...edit, ...v, certifications: v.certifications || [], params: edit?.params || {} }
+      if (edit?.id) await api.put(`/products/${edit.id}`, body); else await api.post('/products', body)
+      message.success(t('b2.saved')); setEdit(undefined); load()
+    } catch { /* validation and API errors retain the form */ }
+    finally { busy.current = false; setSaving(false) }
+  }
+  const saveSku = async () => {
+    if (busy.current || !detail) return
+    busy.current = true; setSaving(true)
+    try {
+      const values = await skuForm.validateFields()
+      const body = { ...skuEdit, ...values }
+      if (!floor) { delete body.cost_price; delete body.floor_price; delete body.customer_prices }
+      if (skuEdit.id) await api.put(`/products/${detail.id}/skus/${skuEdit.id}`, body)
+      else await api.post(`/products/${detail.id}/skus`, body)
+      setSkuEdit(undefined); setDetail((await api.get(`/products/${detail.id}`)).data); load()
+    } catch { /* keep edits for a retry */ }
+    finally { busy.current = false; setSaving(false) }
   }
   const open = (r: any) => api.get(`/products/${r.id}`).then(x => setDetail(x.data))
   return <>
     <Input.Search placeholder={t('b2.searchProduct')} style={{ width: 280, marginBottom: 8 }} onSearch={setQ} allowClear />
-    {manage && <Button type="primary" style={{ marginLeft: 8 }} onClick={() => { form.resetFields(); setEdit({}) }}>{t('b2.newProduct')}</Button>}
+    {manage && <Button type="primary" style={{ marginLeft: 8 }} onClick={() => editProduct({})}>{t('b2.newProduct')}</Button>}
     <Table rowKey="id" size="small" dataSource={rows} onRow={(r: any) => ({ onClick: () => open(r) })} columns={[
       { title: t('b2.nameZh'), dataIndex: 'name_zh' }, { title: t('b2.nameEn'), dataIndex: 'name_en' },
       { title: t('b2.model'), dataIndex: 'model' }, { title: 'HS', dataIndex: 'hs_code', render: (v, r: any) => v || (r.hs_candidates?.[0] && <Tag color="orange">{t('b2.hsSuggest')} {r.hs_candidates[0].code}</Tag>) },
+      ...(manage ? [{ title: '', render: (_: any, row: any) => <Button onClick={event => { event.stopPropagation(); editProduct(row) }}>编辑产品</Button> }] : []),
       { title: 'MOQ', dataIndex: 'moq' }, { title: t('b2.certs'), dataIndex: 'certifications', render: v => (v || []).map((c: string) => <Tag key={c}>{c}</Tag>) },
     ]} />
-    <Modal open={!!edit} title={t('b2.product')} onOk={save} onCancel={() => setEdit(undefined)} width={640}>
+    <Modal confirmLoading={saving} closable={!saving} maskClosable={!saving} cancelButtonProps={{ disabled: saving }} open={!!edit} title={t('b2.product')} onOk={save} onCancel={() => setEdit(undefined)} width={640}>
       <Form form={form} layout="vertical">
         <Form.Item name="name_zh" label={t('b2.nameZh')} rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item name="name_en" label={t('b2.nameEn')}><Input /></Form.Item>
@@ -48,13 +75,32 @@ function ProductList({ manage }: { manage: boolean }) {
         <Alert type="info" showIcon message={t('b2.hsNote')} description={(detail.hs_candidates || []).map((h: any) => `${h.code}：${h.reason}`).join('；') || '—'} />
         <h4 style={{ marginTop: 12 }}>{t('b2.sellingPoints')}</h4>
         {(detail.selling_points || []).map((p: any, i: number) => <div key={i}><Tag color={p.kind === 'fact' ? 'blue' : 'default'}>{t('b2.k_' + p.kind)}</Tag>{p.text}{p.source && <span style={{ color: '#999' }}>（{p.source}）</span>}</div>)}
-        <h4 style={{ marginTop: 12 }}>SKU</h4>
+        <h4 style={{ marginTop: 12 }}>SKU</h4>{manage && <Button onClick={() => editSku({})}>新增 SKU</Button>}
         <Table rowKey="id" size="small" pagination={false} dataSource={detail.skus} columns={[
+          ...(manage ? [{ title: '', render: (_: any, row: any) => <Button onClick={() => editSku(row)}>编辑 SKU</Button> }] : []),
           { title: 'SKU', dataIndex: 'sku' }, { title: t('b2.factoryPrice'), dataIndex: 'factory_price' },
           { title: t('b2.tiers'), dataIndex: 'tier_prices', render: v => (v || []).map((x: any) => `≥${x.min_qty}: ${x.price}`).join('，') },
           { title: t('b2.floorPrice'), dataIndex: 'floor_price', render: v => v ?? t('b2.hidden') },
         ]} />
       </>}
+    </Modal>
+    <Modal open={!!skuEdit} title={skuEdit?.id ? '编辑 SKU' : '新增 SKU'} confirmLoading={saving}
+      closable={!saving} maskClosable={!saving} cancelButtonProps={{ disabled: saving }} onCancel={() => setSkuEdit(undefined)} onOk={saveSku}>
+      <Form form={skuForm} layout="vertical">
+        <Form.Item name="sku" label="SKU 编码" rules={[{ required: true }]}><Input maxLength={64} /></Form.Item>
+        <Form.Item name="unit" label="单位" rules={[{ required: true }]}><Input /></Form.Item>
+        <Form.Item name="currency" label="币种" rules={[{ required: true, pattern: /^[A-Z]{3}$/ }]}><Input maxLength={3} /></Form.Item>
+        <Form.Item name="factory_price" label="出厂单价"><InputNumber min={0} precision={2} /></Form.Item>
+        {floor && <><Form.Item name="cost_price" label="成本单价"><InputNumber min={0} precision={2} /></Form.Item>
+          <Form.Item name="floor_price" label="底价"><InputNumber min={0} precision={2} /></Form.Item></>}
+        <Form.List name="tier_prices">{(fields, { add, remove }) => <>
+          {fields.map(field => <div key={field.key}>
+            <Form.Item name={[field.name, 'min_qty']} label="阶梯起订量" rules={[{ required: true }]}><InputNumber min={1} /></Form.Item>
+            <Form.Item name={[field.name, 'price']} label="阶梯单价" rules={[{ required: true }]}><InputNumber min={0} precision={2} /></Form.Item>
+            <Button onClick={() => remove(field.name)}>删除阶梯</Button>
+          </div>)}<Button onClick={() => add({ min_qty: 1, price: 0 })}>添加价格阶梯</Button>
+        </>}</Form.List>
+      </Form>
     </Modal>
   </>
 }

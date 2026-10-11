@@ -14,4 +14,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD curl -fsS http://127.0.0.1:8000/livez || exit 1
 ENTRYPOINT ["tini", "--"]
 # 迁移由 docker-compose.prod.yml 的 migrate 服务单独执行；开发 compose 仍可用 sh -c "alembic upgrade head && ..."
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers", "--forwarded-allow-ips", "*"]
+CMD ["python", "-m", "app.server"]

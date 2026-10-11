@@ -4,6 +4,7 @@ import { Alert, Button, Card, Col, Descriptions, Form, InputNumber, Modal, Row, 
 import { useTranslation } from 'react-i18next'
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from '../api/client'
+import RemoteSelect from '../RemoteSelect'
 import { useAuth } from '../auth'
 
 function Plan() {
@@ -51,7 +52,7 @@ function Budgets() {
     <Modal open={open} title={t('b4.addBudget')} onCancel={() => setOpen(false)} onOk={async () => { await api.post('/budgets', await form.validateFields()); setOpen(false); load(); message.success(t('b1.saved')) }}>
       <Form form={form} layout="vertical" initialValues={{ scope: 'user', alert_pct: 80, hard: true }}>
         <Form.Item name="scope" label={t('b4.scope')}><Select options={['tenant', 'department', 'user'].map(s => ({ value: s, label: t('b4.sc_' + s) }))} /></Form.Item>
-        {scope === 'user' && <Form.Item name="scope_id" label={t('b4.target')} rules={[{ required: true }]}><Select options={users.map(u => ({ value: u.id, label: u.name }))} /></Form.Item>}
+        {scope === 'user' && <Form.Item name="scope_id" label={t('b4.target')} rules={[{ required: true }]}><RemoteSelect url="/users" /></Form.Item>}
         {scope === 'department' && <Form.Item name="scope_id" label={t('b4.target')} rules={[{ required: true }]}><Select options={deps.map(d => ({ value: d.id, label: d.name }))} /></Form.Item>}
         <Form.Item name="monthly_limit" label={t('b4.limit')} rules={[{ required: true }]}><InputNumber min={1} /></Form.Item>
         <Form.Item name="alert_pct" label={t('b4.alertPct')}><InputNumber min={1} max={100} /></Form.Item>

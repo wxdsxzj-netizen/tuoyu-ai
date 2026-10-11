@@ -36,13 +36,21 @@ def inq_out(db, i: Inquiry, detail=False) -> dict:
              handoff_id=str(i.handoff_id) if i.handoff_id else None, opportunity_id=str(i.opportunity_id) if i.opportunity_id else None)
     if detail:
         d["score_detail"] = i.score_detail
+        from app.models import Conversation
+        d["conversations"] = [{"id": str(c.id), "subject": c.subject, "peer_email": c.peer_email, "channel": c.channel}
+                              for c in db.scalars(select(Conversation).where(
+                                  Conversation.id.in_(inq_mod.conversation_ids(db, i)), Conversation.deleted_at.is_(None))
+                                  .order_by(Conversation.created_at))]
     return d
 
 
 @router.get("/inquiries", tags=["inquiries"])
-def list_inquiries(status: str | None = None, grade: str | None = None, page: int = 1, page_size: int = Query(20, le=100),
+def list_inquiries(status: str | None = None, grade: str | None = None, search: str | None = Query(None, alias="q"),
+                   page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
                    cu: CurrentUser = Depends(require("inbox.read")), db: Session = Depends(get_db)):
-    q = select(Inquiry).where(Inquiry.status != "merged")
+    q = select(Inquiry).where(Inquiry.status != "merged", Inquiry.deleted_at.is_(None))
+    if search:
+        q = q.where(Inquiry.peer_email.ilike(f"%{search}%"))
     if not _all(cu):  # 业务员：自己的 + 共享池
         q = q.where((Inquiry.assignee_id == cu.id) | (Inquiry.status == "pending_assign"))
     if status:
@@ -50,7 +58,7 @@ def list_inquiries(status: str | None = None, grade: str | None = None, page: in
     if grade:
         q = q.where(Inquiry.grade == grade)
     total = db.scalar(select(func.count()).select_from(q.subquery()))
-    rows = db.scalars(q.order_by(Inquiry.created_at.desc()).offset((page - 1) * page_size).limit(page_size))
+    rows = db.scalars(q.order_by(Inquiry.created_at.desc(), Inquiry.id.desc()).offset((page - 1) * page_size).limit(page_size))
     return {"items": [inq_out(db, i) for i in rows], "total": total}
 
 
@@ -76,6 +84,8 @@ def review_inquiry(iid: uuid.UUID, body: ReviewIn, request: Request, cu: Current
                    db: Session = Depends(get_db)):
     from app.org.legacy_approvals import gate
     gate(db, "inquiry_review", cu.user)
+    from app.outreach.intents import lock_tenant
+    lock_tenant(db)
     i = inq_mod.review(db, _inq(db, cu, iid), body.genuine, body.reason, cu.user)
     audit(db, cu, request, "inquiry.review", "inquiry", i.id, genuine=body.genuine, reason=body.reason)
     db.commit()
@@ -90,6 +100,8 @@ class AssignIn(BaseModel):
 def assign_inquiry(iid: uuid.UUID, body: AssignIn, request: Request, cu: CurrentUser = Depends(require("inbox.read")),
                    db: Session = Depends(get_db)):
     """手动改派需 inquiry.manage；业务员可从共享池领取给自己。"""
+    from app.outreach.intents import lock_tenant
+    lock_tenant(db)
     i = _inq(db, cu, iid)
     if "inquiry.manage" not in cu.permissions and not (i.status == "pending_assign" and body.assignee_id == cu.id):
         raise AppError("COMMON_FORBIDDEN")
@@ -106,10 +118,8 @@ def assign_inquiry(iid: uuid.UUID, body: AssignIn, request: Request, cu: Current
 
 @router.post("/inquiries/{iid}:rescore", tags=["inquiries"])
 def rescore(iid: uuid.UUID, request: Request, cu: CurrentUser = Depends(require("inquiry.manage")), db: Session = Depends(get_db)):
-    from app.models import Message
     i = _inq(db, cu, iid)
-    msgs = db.scalars(select(Message).where(Message.conversation_id == i.conversation_id, Message.direction == "in"))
-    inq_mod.score(db, i, "\n".join(f"{m.subject or ''}\n{m.body}" for m in msgs))
+    inq_mod.score(db, i, inq_mod.inquiry_text(db, i))
     audit(db, cu, request, "inquiry.rescore", "inquiry", i.id, score=i.score, grade=i.grade)
     db.commit()
     return inq_out(db, i, True)
@@ -198,13 +208,15 @@ STATUS_ZH = {"draft": "草稿", "plan_pending": "计划待确认", "queued": "�
 
 
 def task_out(db, t: AgentTask, logs=False) -> dict:
+    from app.models import AgentControl
+    control = db.get(AgentControl, t.id)
     d = {"id": str(t.id), "input_text": t.input_text, "mode": t.mode, "intent": t.intent, "questions": t.questions, "plan": t.plan,
          "estimate": t.estimate, "budget": t.budget, "autonomy": t.autonomy, "effective_autonomy": t.effective_autonomy,
          "limited_by": t.limited_by, "status": t.status, "status_zh": STATUS_ZH.get(t.status), "current_step": t.current_step,
          "pending_approval": t.pending_approval, "credits_held": t.credits_held, "credits_used": t.credits_used, "answer": t.answer,
          "context": {k: (len(v) if isinstance(v, list) else v) for k, v in (t.context or {}).items()}, "pause_reason": t.pause_reason,
          "model": t.model, "created_by": str(t.created_by) if t.created_by else None, "created_at": _iso(t.created_at),
-         "finished_at": _iso(t.finished_at)}
+         "finished_at": _iso(t.finished_at), "control_requested": control.action if control else None}
     if logs:
         d["logs"] = [{"step_no": x.step_no, "agent": x.agent, "tool": x.tool, "status": x.status, "input": x.input, "output": x.output,
                       "credits": x.credits, "duration_ms": x.duration_ms, "model": x.model, "at": _iso(x.created_at)}
@@ -240,12 +252,12 @@ def create_task(body: TaskIn, request: Request, cu: CurrentUser = Depends(requir
 
 
 @router.get("/agent/tasks", tags=["agent"])
-def list_tasks(page: int = 1, page_size: int = Query(20, le=100), cu: CurrentUser = Depends(require("agent.run")), db: Session = Depends(get_db)):  # noqa: E501
+def list_tasks(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), cu: CurrentUser = Depends(require("agent.run")), db: Session = Depends(get_db)):  # noqa: E501
     q = select(AgentTask).where(AgentTask.deleted_at.is_(None))
     if not ({"agent.approve", "crm.all"} & cu.permissions):
         q = q.where(AgentTask.created_by == cu.id)
     total = db.scalar(select(func.count()).select_from(q.subquery()))
-    rows = db.scalars(q.order_by(AgentTask.created_at.desc()).offset((page - 1) * page_size).limit(page_size))
+    rows = db.scalars(q.order_by(AgentTask.created_at.desc(), AgentTask.id.desc()).offset((page - 1) * page_size).limit(page_size))
     return {"items": [task_out(db, t) for t in rows], "total": total, "balance": credits.balance(db)}
 
 
@@ -266,8 +278,17 @@ class DecideIn(BaseModel):
 @router.post("/agent/tasks/{tid}:{action}", tags=["agent"])
 def task_action(tid: uuid.UUID, action: str, request: Request, body: dict | None = None,
                 cu: CurrentUser = Depends(require("agent.run")), db: Session = Depends(get_db)):
-    credits.lock_wallet(db)
+    from app.agent import queue
+    from app.core.db import current_tenant
     t = _task(db, cu, tid)
+    if action in {"pause", "cancel"} and t.status == "running":
+        queue.request_control(db, t, action, cu.id)
+        audit(db, cu, request, f"agent.task.{action}_requested", "agent_task", t.id)
+        db.commit()
+        db.refresh(t)
+        return task_out(db, t, logs=True)
+    credits.lock_wallet(db)
+    db.refresh(t)
     body = body or {}
     res = None
     if action == "answer":
@@ -280,17 +301,29 @@ def task_action(tid: uuid.UUID, action: str, request: Request, body: dict | None
         gate(db, "agent", cu.user, t.created_by)
         agent.decide(db, t, cu.user, d.approve, d.note)
     elif action == "pause":
-        agent.pause(db, t)
+        if t.status == "running":
+            queue.request_control(db, t, action, cu.id)
+        else:
+            agent.pause(db, t)
     elif action == "resume":
         agent.resume(db, t, cu.user)
     elif action == "cancel":
-        agent.cancel(db, t)
+        if t.status == "running":
+            queue.request_control(db, t, action, cu.id)
+        else:
+            agent.cancel(db, t)
+    elif action == "reconcile-not-applied":
+        queue.reconcile_not_applied(db, t, cu.user, body.get("evidence"))
     elif action == "rollback":
         res = agent.rollback(db, t, cu.user)
     else:
         raise AppError("COMMON_NOT_FOUND")
     audit(db, cu, request, f"agent.task.{action}", "agent_task", t.id, status=t.status, **({"rollback": res} if res else {}))
     db.commit()
+    if t.status == "queued":
+        queue.dispatch(current_tenant(db), t.id)
+        db.expire_all()
+        t = _task(db, cu, tid)
     out = task_out(db, t, logs=True)
     if res:
         out["rollback"] = res

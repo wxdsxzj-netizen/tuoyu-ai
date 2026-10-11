@@ -4,6 +4,7 @@ import { Alert, Badge, Button, Card, Col, Empty, Input, List, Radio, Row, Select
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
+import { useServerPage, PageError } from '../useServerPage'
 import { useAuth } from '../auth'
 
 const CAT_COLOR: Record<string, string> = { inquiry: 'green', positive: 'green', sample: 'cyan', meeting: 'blue', referral: 'purple', not_interested: 'default', unsubscribe: 'red', auto_reply: 'gold' }
@@ -14,7 +15,8 @@ export default function InboxPage() {
   const [params, setParams] = useSearchParams()
   const selectedId = params.get('c')
   const [status, setStatus] = useState<string>()
-  const [rows, setRows] = useState<any[]>([])
+  const page = useServerPage('/conversations', { status })
+  const { rows, reload: load } = page
   const [cur, setCur] = useState<string>()
   const [detail, setDetail] = useState<any>()
   const [draft, setDraft] = useState('')
@@ -31,10 +33,6 @@ export default function InboxPage() {
     draftVersion.current += 1
     setDraft(value); setCheck(undefined); setBilingual(null)
   }
-  const load = useCallback(async () => {
-    const r = await api.get('/conversations', { params: { status, size: 100 } })
-    setRows(r.data.items)
-  }, [status])
   const open = useCallback(async (id: string) => {
     const requestGeneration = ++generation.current
     draftVersion.current += 1
@@ -47,7 +45,6 @@ export default function InboxPage() {
       if (generation.current === requestGeneration) setOpenError([403, 404].includes(error.response?.status) ? '会话不存在或无权查看。' : '会话加载失败，请重试。')
     }
   }, [])
-  useEffect(() => { load() }, [load])
   useEffect(() => {
     if (selectedId) open(selectedId)
     else { generation.current++; setCur(undefined); setDetail(undefined); setOpenError(undefined) }
@@ -113,7 +110,8 @@ export default function InboxPage() {
       <Col span={8}>
         <Card size="small" title={t('p4.inbox')} extra={<Radio.Group size="small" value={status ?? ''} onChange={(e) => setStatus(e.target.value || undefined)}
           options={[{ value: '', label: t('p4.all') }, { value: 'unread', label: t('p4.cs_unread') }, { value: 'pending', label: t('p4.cs_pending') }, { value: 'closed', label: t('p4.cs_closed') }]} optionType="button" />}>
-          <List size="small" dataSource={rows} locale={{ emptyText: <Empty description={t('p4.noConv')} /> }} renderItem={(r: any) => (
+          <PageError page={page} />
+          <List loading={page.loading} pagination={page.pagination} size="small" dataSource={rows} locale={{ emptyText: <Empty description={t('p4.noConv')} /> }} renderItem={(r: any) => (
             <List.Item onClick={() => setParams(previous => { const next = new URLSearchParams(previous); next.set('c', r.id); return next })} style={{ cursor: 'pointer', background: r.id === cur ? '#e6f4ff' : undefined, paddingLeft: 8 }}>
               <List.Item.Meta
                 title={<Space>{r.status === 'unread' && <Badge status="processing" />}<span>{r.peer_email}</span></Space>}

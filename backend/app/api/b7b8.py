@@ -190,7 +190,8 @@ def warmup_log(mid: uuid.UUID, cu: CurrentUser = Depends(require("mailbox.read")
 
 
 @router.get("/mailboxes/oauth/{provider}:start", tags=["mailboxes"])
-def oauth_start(provider: str, cu: CurrentUser = Depends(require("mailbox.manage")), db: Session = Depends(get_db)):
+def oauth_start(provider: str, response: Response, cu: CurrentUser = Depends(require("mailbox.manage")), db: Session = Depends(get_db)):
+    response.headers["Cache-Control"] = "no-store"
     return delivery.oauth_start(db, provider, cu.id)
 
 
@@ -208,11 +209,27 @@ def oauth_stub(
     return {"id": str(mb.id), "address": mb.address, "oauth_status": mb.oauth_status, "note": "stub：仍只发往本地 SMTP sink"}
 
 
+class OAuthCallbackIn(BaseModel):
+    state: str = Field(min_length=32, max_length=256)
+    code: str | None = Field(None, max_length=8192)
+    error: str | None = Field(None, max_length=128)
+
+
 @router.post("/mailboxes/oauth/{provider}:callback", tags=["mailboxes"])
-def oauth_callback(provider: str):
-    raise AppError(
-        "DELIVERY_PROVIDER_UNAVAILABLE", details={"provider": provider, "reason": "OAuth 回调需配置 Client ID 并完成厂商验证后启用"}
-    )
+def oauth_callback(provider: str, request: Request, response: Response, body: OAuthCallbackIn | None = None,
+                   cu: CurrentUser = Depends(require("mailbox.manage")), db: Session = Depends(get_db)):
+    from app.outreach import oauth
+    response.headers["Cache-Control"] = "no-store"
+    if not oauth.config(provider)[0]:
+        raise AppError("DELIVERY_PROVIDER_UNAVAILABLE", message="OAuth尚未配置启用，请使用SMTP/IMAP或联系管理员。")
+    if body is None:
+        raise AppError("COMMON_REQUIRED")
+    mailbox = oauth.complete(db, provider, cu.id, body.state, body.code, body.error)
+    if mailbox is None:
+        return {"cancelled": True}
+    audit(db, cu, request, "mailbox.oauth_connected", "mailbox", mailbox.id, {"provider": provider})
+    db.commit()
+    return {"id": str(mailbox.id), "address": mailbox.address, "oauth_status": mailbox.oauth_status}
 
 
 class VerifyIn(BaseModel):

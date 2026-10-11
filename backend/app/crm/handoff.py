@@ -70,18 +70,27 @@ def _research(db, contact: Contact | None, acc: Account | None) -> dict:
     return r
 
 
-def create(db: Session, conv: Conversation, e: Enrollment | None, contact: Contact | None, category: str, now=None) -> Handoff:
+def create(db: Session, conv: Conversation, e: Enrollment | None, contact: Contact | None, category: str,
+           now=None, inquiry=None) -> Handoff:
     now = now or utcnow()
-    msgs = list(db.scalars(select(Message).where(Message.conversation_id == conv.id, Message.direction != "note").order_by(Message.created_at)))  # noqa: E501
+    from app.crm import inquiry as inquiry_mod
+    msgs = inquiry_mod.messages(db, inquiry) if inquiry else list(db.scalars(select(Message).where(
+        Message.conversation_id == conv.id, Message.direction != "note").order_by(Message.created_at)))
     needs = extract_needs(db, "\n".join(m.body for m in msgs if m.direction == "in"))
-    ex = db.scalar(select(Handoff).where(Handoff.conversation_id == conv.id, Handoff.status == "pending"))
+    ex = (db.get(Handoff, inquiry.handoff_id) if inquiry and inquiry.handoff_id else
+          db.scalar(select(Handoff).where(Handoff.conversation_id == conv.id, Handoff.status == "pending")))
     if ex:  # 同一会话已有待领取交付包：刷新需求要点，不重复生成
+        if ex.status != "pending":
+            return ex  # Keep the original disposition; never overwrite accepted/rejected delivery history.
         ex.needs, ex.category = needs, category
+        ex.summary = _summary(conv, msgs, needs)
         db.flush()
         return ex
     seq = db.get(Sequence, e.sequence_id) if e else None
     acc = db.get(Account, conv.account_id) if conv.account_id else None
     assignee = (acc.owner_id if acc and acc.owner_id else None) or (seq.owner_id if seq else None) or conv.assignee_id
+    if inquiry:
+        assignee = inquiry.assignee_id
     try:
         summary = _summary(conv, msgs, needs)
     except Exception:  # noqa: BLE001 —— 生成失败仍创建交付包
@@ -91,7 +100,8 @@ def create(db: Session, conv: Conversation, e: Enrollment | None, contact: Conta
         sug = suggest_replies(db, conv)["drafts"][0]["body"]
     except Exception:  # noqa: BLE001
         sug = None
-    h = Handoff(conversation_id=conv.id, enrollment_id=e.id if e else None, contact_id=contact.id if contact else None,
+    h = Handoff(conversation_id=inquiry.conversation_id if inquiry else conv.id, enrollment_id=e.id if e else None,
+                contact_id=contact.id if contact else None,
                 account_id=acc.id if acc else None, assignee_id=assignee, category=category, needs=needs, summary=summary,
                 research=_research(db, contact, acc), suggested_reply=sug, sla_due_at=now + timedelta(hours=SLA_HOURS) if assignee else None)  # noqa: E501
     db.add(h)
@@ -115,6 +125,9 @@ def accept(db: Session, h: Handoff, user) -> Opportunity:
         raise AppError("COMMON_ALREADY_TAKEN" if h.status == "accepted" else "COMMON_INVALID_STATE")
     if not _can_act(user, h):
         raise AppError("COMMON_ALREADY_TAKEN")
+    from app.models import Inquiry
+    if db.scalar(select(Inquiry.id).where(Inquiry.handoff_id == h.id, Inquiry.status == "pending_review")):
+        raise AppError("COMMON_INVALID_STATE", message="关联询盘仍需人工复核")
     conv = db.get(Conversation, h.conversation_id)
     contact = db.get(Contact, h.contact_id) if h.contact_id else None
     from app.inbox.service import ensure_account
@@ -141,6 +154,10 @@ def accept(db: Session, h: Handoff, user) -> Opportunity:
     from app.models import Inquiry
     for inq in db.scalars(select(Inquiry).where(Inquiry.handoff_id == h.id)):
         inq.status, inq.opportunity_id, inq.account_id = "converted", opp.id, acc.id
+        from app.crm.inquiry import conversation_ids, sync_assignee
+        sync_assignee(db, inq, user.id)
+        for linked in db.scalars(select(Conversation).where(Conversation.id.in_(conversation_ids(db, inq)))):
+            linked.account_id = acc.id
     if contact and not contact.account_id:
         contact.account_id = acc.id
     db.flush()

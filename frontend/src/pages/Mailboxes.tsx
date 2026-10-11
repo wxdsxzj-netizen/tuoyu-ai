@@ -4,6 +4,7 @@ import { Alert, Button, Card, Col, Drawer, Form, Input, InputNumber, Modal, Prog
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
 import { useAuth } from '../auth'
+import OAuthConnect from '../OAuthConnect'
 
 const LEVEL: Record<string, string> = { normal: 'green', watch: 'gold', slow: 'orange', paused: 'red' }
 const ok = (s: string) => <Tag color={s === 'pass' ? 'green' : s === 'fail' ? 'red' : 'default'}>{s === 'pass' ? '✓' : s === 'fail' ? '✗' : '?'}</Tag>
@@ -27,8 +28,8 @@ export default function MailboxesPage() {
       {mbs.some((m) => m.status === 'paused') && <Alert type="error" showIcon message={t('p3.breakerBanner')} />}
       <Space>
         {manage && <Button type="primary" onClick={() => setBinding(true)}>{t('p3.bindImap')}</Button>}
-        {manage && <Button onClick={() => api.post('/mailboxes/oauth/google:start').catch(() => 0)}>{t('p3.bindGoogle')}</Button>}
-        {manage && <Button onClick={() => api.post('/mailboxes/oauth/microsoft:start').catch(() => 0)}>{t('p3.bindMs')}</Button>}
+        {manage && <OAuthConnect provider="google">{t('p3.bindGoogle')}</OAuthConnect>}
+        {manage && <OAuthConnect provider="microsoft">{t('p3.bindMs')}</OAuthConnect>}
       </Space>
       <Row gutter={[16, 16]}>
         {mbs.map((m) => (
@@ -41,6 +42,7 @@ export default function MailboxesPage() {
                 manage && <a key="t" onClick={async () => { const r = await api.post(`/mailboxes/${m.id}:test`); if (r.data.ok) message.success(t('p3.testOk')); else message.error(r.data.detail) }}>{t('p3.test')}</a>,
                 manage && <a key="d" onClick={() => Modal.confirm({ title: t('p3.unbind'), onOk: async () => { await api.delete(`/mailboxes/${m.id}`); load() } })}>{t('p3.unbind')}</a>,
               ].filter(Boolean)}>
+              {m.imap_poll_error && <Alert type="warning" showIcon message="收件同步需要核查" description={m.imap_poll_error} />}
               <Space align="center" size="large">
                 <Progress type="circle" size={72} percent={m.health_score} strokeColor={m.health_score >= 80 ? '#52c41a' : m.health_score >= 60 ? '#faad14' : '#f5222d'} format={(p) => p} />
                 <Space direction="vertical" size={2}>

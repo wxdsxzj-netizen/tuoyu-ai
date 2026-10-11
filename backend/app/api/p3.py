@@ -2,7 +2,7 @@
 import uuid
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -286,6 +286,9 @@ class MailboxPatch(BaseModel):
 
 
 class MailboxOut(ORM):
+    oauth_provider: str | None = None
+    oauth_status: str | None = None
+    imap_poll_error: str | None = None
     id: uuid.UUID
     address: str
     display_name: str | None
@@ -317,6 +320,11 @@ class MailboxOut(ORM):
 
 def mb_out(db, mb):
     o = MailboxOut.model_validate(mb)
+    if mb.oauth_provider and mb.oauth_status != "stub":
+        from app.models import MailboxOAuthCredential
+        credential = db.scalar(select(MailboxOAuthCredential).where(MailboxOAuthCredential.mailbox_id == mb.id))
+        if not credential or credential.status != "connected":
+            o.auth_status, o.oauth_status = "expired", credential.status if credential else "expired"
     o.has_smtp_password, o.has_imap_password = bool(mb.smtp_password_enc), bool(mb.imap_password_enc)
     o.today_limit = health.daily_cold_limit(mb)
     o.today_sent = health.today_metric(db, mb).sent_cold
@@ -369,9 +377,11 @@ def bind_mailbox(body: MailboxIn, request: Request, cu: CurrentUser = Depends(re
 
 
 @router.post("/mailboxes/oauth/{provider}:start", tags=["mailboxes"], deprecated=True)
-def oauth_start_legacy(provider: str, cu: CurrentUser = Depends(require("mailbox.manage")), db: Session = Depends(get_db)):
+def oauth_start_legacy(provider: str, response: Response, cu: CurrentUser = Depends(require("mailbox.manage")),
+                       db: Session = Depends(get_db)):
     """请改用 GET /mailboxes/oauth/{provider}:start。"""
     from app.b7 import delivery
+    response.headers["Cache-Control"] = "no-store"
     return delivery.oauth_start(db, provider, cu.id)
 
 
@@ -380,6 +390,8 @@ def patch_mailbox(mid: uuid.UUID, body: MailboxPatch, request: Request, cu: Curr
                   db: Session = Depends(get_db)):
     mb = _get(db, Mailbox, mid)
     data = body.model_dump(exclude_unset=True)
+    if mb.oauth_provider and mb.oauth_status != "stub" and ({"smtp_password", "imap_password"} & data.keys()):
+        raise AppError("COMMON_VALIDATION", message="OAuth邮箱请通过服务商重新授权，不能用密码替换授权。")
     if "smtp_password" in data:
         mb.smtp_password_enc = encrypt(data.pop("smtp_password"))
         mb.auth_status = "ok"
@@ -410,6 +422,12 @@ def test_mailbox(mid: uuid.UUID, cu: CurrentUser = Depends(require("mailbox.mana
 @router.delete("/mailboxes/{mid}", status_code=204, tags=["mailboxes"])
 def unbind_mailbox(mid: uuid.UUID, request: Request, cu: CurrentUser = Depends(require("mailbox.manage")), db: Session = Depends(get_db)):
     mb = _get(db, Mailbox, mid)
+    db.refresh(mb, with_for_update={"of": Mailbox})
+    from app.models import MailboxOAuthCredential
+    credential = db.scalar(select(MailboxOAuthCredential).where(MailboxOAuthCredential.mailbox_id == mb.id).with_for_update())
+    if credential:
+        credential.status, credential.access_token_enc, credential.refresh_token_enc = "revoked", None, None
+    mb.oauth_status = "revoked" if mb.oauth_provider else mb.oauth_status
     mb.status, mb.deleted_at, mb.smtp_password_enc, mb.imap_password_enc = "unbound", utcnow(), None, None
     audit(db, cu, request, "mailbox.unbind", "mailbox", mb.id)
     db.commit()
@@ -460,7 +478,7 @@ def poll(mid: uuid.UUID, cu: CurrentUser = Depends(require("mailbox.manage")), d
     mb = _get(db, Mailbox, mid)
     n = inbound.poll_mailbox(db, mb)
     db.commit()
-    return {"fetched": n}
+    return {"fetched": n, "poll_error": mb.imap_poll_error}
 
 
 # ======================= 序列 =======================
@@ -973,7 +991,7 @@ def outbound(enrollment_id: uuid.UUID | None = None, page: int = Query(1, ge=1),
     stmt = select(OutboundMessage).where(OutboundMessage.deleted_at.is_(None))
     if enrollment_id:
         stmt = stmt.where(OutboundMessage.enrollment_id == enrollment_id)
-    return page_of(db, stmt.order_by(OutboundMessage.sent_at.desc()), page, size,
+    return page_of(db, stmt.order_by(OutboundMessage.sent_at.desc(), OutboundMessage.id.desc()), page, size,
                    lambda m: {"id": str(m.id), "to": m.to_email, "subject": m.subject, "body": m.body_text, "status": m.status,
                               "sent_at": m.sent_at.isoformat() if m.sent_at else None, "message_id": m.message_id, "snapshot": m.snapshot})
 
@@ -997,7 +1015,7 @@ def record_inbound(body: InboundIn, request: Request, cu: CurrentUser = Depends(
 @router.get("/delivery/inbound", tags=["delivery"])
 def list_inbound(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100), cu: CurrentUser = Depends(require("sequence.read")),
                  db: Session = Depends(get_db)):
-    return page_of(db, select(InboundMessage).order_by(InboundMessage.received_at.desc()), page, size,
+    return page_of(db, select(InboundMessage).order_by(InboundMessage.received_at.desc(), InboundMessage.id.desc()), page, size,
                    lambda m: {"id": str(m.id), "from": m.from_email, "subject": m.subject, "body": m.body[:2000], "category": m.category,
                               "confidence": m.confidence, "needs_human": m.needs_human, "received_at": m.received_at.isoformat()})
 

@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     customs_api_key: str = Field("", validation_alias=AliasChoices("TL_CUSTOMS_API_KEY", "CUSTOMS_API_KEY"))
     whatsapp_token: str = Field("", validation_alias=AliasChoices("TL_WHATSAPP_TOKEN", "WHATSAPP_TOKEN"))
     whatsapp_phone_number_id: str = Field("", validation_alias=AliasChoices("TL_WHATSAPP_PHONE_NUMBER_ID"))
+    mailbox_oauth_enabled: bool = False
+    google_oauth_client_secret: str = ""
+    microsoft_oauth_client_secret: str = ""
     google_oauth_client_id: str = Field("", validation_alias=AliasChoices("TL_GOOGLE_OAUTH_CLIENT_ID"))
     microsoft_oauth_client_id: str = Field("", validation_alias=AliasChoices("TL_MICROSOFT_OAUTH_CLIENT_ID"))
     apollo_api_key: str = ""

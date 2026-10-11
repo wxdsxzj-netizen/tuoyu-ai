@@ -134,6 +134,9 @@ def test_mime_dsn_recipient_block_and_original_message_id_are_used(client, statu
            "--audit--\r\n").encode()
 
     class Imap:
+        def response(self, name):
+            return name, [b"1"]
+
         def select(self, *_):
             return "OK", [b"1"]
 

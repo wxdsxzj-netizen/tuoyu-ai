@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import os
+import uuid
 import zipfile
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -10,7 +11,6 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.core.db import utcnow
 from app.models import (
     Account,
@@ -59,30 +59,42 @@ def build(db: Session, ex: DataExport) -> DataExport:
         return ex
     ex.status = "running"
     db.flush()
-    root = os.path.join(get_settings().upload_dir, "exports")
-    os.makedirs(root, exist_ok=True)
-    path = os.path.join(root, f"{ex.tenant_id}-{ex.id}.zip")
+    from app.org.export_files import managed_root, owned_paths, remove_paths
     counts = {}
+    path = temporary = None
     try:
-        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-            for name in ex.scope or list(SCOPES):
-                m = SCOPES[name]
-                cols = [c.name for c in m.__table__.columns if c.name not in SECRET_COLS]
-                rows = [{c: _val(getattr(o, c, None)) for c in cols} for o in db.scalars(select(m))]
-                counts[name] = len(rows)
-                z.writestr(f"{name}.json", json.dumps(rows, ensure_ascii=False, indent=1))
-                buf = io.StringIO()
-                buf.write(f"# {ex.watermark}\n")
-                w = csv.DictWriter(buf, fieldnames=cols)
-                w.writeheader()
-                for r in rows:
-                    w.writerow({k: json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v for k, v in r.items()})
-                z.writestr(f"{name}.csv", "\ufeff" + buf.getvalue())
-            z.writestr("README.txt", f"拓域 AI 数据导出\n{ex.watermark}\n生成时间：{utcnow().isoformat()}\n对象数量：{json.dumps(counts, ensure_ascii=False)}\n"  # noqa: E501
-                                     "说明：发件箱密码、令牌等凭据不包含在导出中。附件原文件请联系平台导出。\n")
-        ex.status, ex.file_path, ex.size_bytes, ex.counts = "ready", path, os.path.getsize(path), counts
-        ex.expires_at = utcnow() + timedelta(days=7)
-    except Exception as e:  # noqa: BLE001
-        ex.status, ex.error = "failed", str(e)[:500]
+        root = managed_root()
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = root / f"{ex.tenant_id}-{ex.id}.zip"
+        remove_paths(owned_paths(ex.tenant_id, ex.id))
+        temporary = root / f".{ex.tenant_id}-{ex.id}.{uuid.uuid4().hex}.tmp"
+        # The savepoint makes real SQL errors recoverable before recording failed status.
+        with db.begin_nested():
+            fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+            with os.fdopen(fd, "w+b") as stream, zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as z:
+                for name in ex.scope or list(SCOPES):
+                    m = SCOPES[name]
+                    cols = [c.name for c in m.__table__.columns if c.name not in SECRET_COLS]
+                    rows = [{c: _val(getattr(o, c, None)) for c in cols} for o in db.scalars(select(m))]
+                    counts[name] = len(rows)
+                    z.writestr(f"{name}.json", json.dumps(rows, ensure_ascii=False, indent=1))
+                    buf = io.StringIO()
+                    buf.write(f"# {ex.watermark}\n")
+                    w = csv.DictWriter(buf, fieldnames=cols)
+                    w.writeheader()
+                    for r in rows:
+                        w.writerow({k: json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v for k, v in r.items()})
+                    z.writestr(f"{name}.csv", "\ufeff" + buf.getvalue())
+                z.writestr("README.txt", f"拓域 AI 数据导出\n{ex.watermark}\n生成时间：{utcnow().isoformat()}\n对象数量：{json.dumps(counts, ensure_ascii=False)}\n"  # noqa: E501
+                                         "说明：发件箱密码、令牌等凭据不包含在导出中。附件原文件请联系平台导出。\n")
+            os.replace(temporary, path)
+            ex.status, ex.file_path, ex.size_bytes, ex.counts = "ready", str(path), path.stat().st_size, counts
+            ex.expires_at = utcnow() + timedelta(days=7)
+            db.flush()
+    except Exception as exc:  # noqa: BLE001
+        # Raw exceptions may contain query parameters or personal data.
+        ex.status, ex.file_path, ex.error = "failed", None, f"Export failed ({type(exc).__name__})"
+        # Failure to clean is surfaced, and the deterministic name remains discoverable by DSR.
+        remove_paths(owned_paths(ex.tenant_id, ex.id))
     db.flush()
     return ex

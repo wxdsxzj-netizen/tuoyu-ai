@@ -28,11 +28,11 @@
 - **BackendDown / ReadyzFailing**：`dc ps`；`dc logs --tail=200 backend`；迁移未执行时 `dc run --rm migrate`。
 - **HighErrorRate**：按 `trace_id` 在 JSON 日志中检索：`dc logs backend | grep <trace_id>`。
 - **MailboxCircuitOpen**：查看“发件箱”页熔断原因；确认 DNS / 黑名单（触达工具 → 黑名单检查）；冷却期后自动恢复。
-- **BackupStale**：`dc exec backend ls -l /backups`；手动 `deploy/scripts/backup.sh`。
+- **BackupStale**：在宿主机检查备份目录、完整清单及成功指标；backend没有挂载/backups。按故障原因修复后手动运行 `deploy/scripts/backup.sh`。
 - **WorkerQueueBacklog**：`dc logs worker`；`dc up -d --scale worker=2`（4C8G 上限 2）。
 
 ## 3. 数据库
-- 恢复：`deploy/scripts/restore.sh <备份文件>`（需输入 RESTORE）。每月演练一次。
+- 恢复：`deploy/scripts/restore.sh <db-时间戳.dump> <uploads-同时间戳.tar.gz>`；同目录必须有匹配SHA256SUMS清单，宿主机Python≥3.11。输入RESTORE后先暂存恢复，再保留原库/附件并切换、迁移、验证/readyz。成功仍保持worker/beat/caddy停止。按[恢复核对与回退步骤](docs/audit/restore-rehearsal.md)核对外部动作和broker状态，再人工开闸；每月在隔离环境演练。
 - 连接耗尽：`dc exec postgres psql -U tuoyu -c "select count(*) from pg_stat_activity"`；重启 backend。
 
 ## 4. 安全事件

@@ -2,13 +2,11 @@
 
 import hashlib
 import random
-import secrets
 from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.core.db import bypass_tenant, utcnow
 from app.core.errors import AppError
 from app.models import Mailbox, SeedInbox, SeedTest, WarmupExchange, WarmupPeer
@@ -123,45 +121,8 @@ def warmup_tick(db: Session, mailbox: Mailbox, today: date | None = None) -> dic
 
 
 def oauth_start(db: Session, provider: str, user_id, redirect_uri: str | None = None) -> dict:
-    if provider not in OAUTH_PROVIDERS:
-        raise AppError("COMMON_VALIDATION", details={"provider": list(OAUTH_PROVIDERS)})
-    s = get_settings()
-    meta = OAUTH_PROVIDERS[provider]
-    state = secrets.token_urlsafe(24)
-    # 无真实 client_id 时返回说明性连接桩
-    client_id = getattr(s, f"{provider}_oauth_client_id", "") or ""
-    stub = not bool(client_id)
-    url = None
-    if not stub:
-        from urllib.parse import urlencode
-
-        url = (
-            meta["auth_url"]
-            + "?"
-            + urlencode(
-                {
-                    "client_id": client_id,
-                    "response_type": "code",
-                    "scope": " ".join(meta["scopes"]),
-                    "state": state,
-                    "redirect_uri": redirect_uri or "https://app.example/oauth/callback",
-                }
-            )
-        )
-    return {
-        "provider": provider,
-        "state": state,
-        "authorize_url": url,
-        "stub": stub,
-        "scopes": meta["scopes"],
-        "note": meta["note"],
-        "next_steps": [
-            "在云控制台创建 OAuth 应用并完成验证",
-            "配置 TL_GOOGLE_OAUTH_CLIENT_ID / TL_MICROSOFT_OAUTH_CLIENT_ID",
-            "回调地址指向 /api/v1/mailboxes/oauth/{provider}:callback",
-            "验证通过前可用「完成桩连接」创建 stub 发件箱用于流程演练",
-        ],
-    }
+    from app.outreach.oauth import start
+    return start(db, provider, user_id)
 
 
 def oauth_complete_stub(db: Session, provider: str, email: str, user_id) -> Mailbox:

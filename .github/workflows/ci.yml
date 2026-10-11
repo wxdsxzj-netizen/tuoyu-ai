@@ -31,6 +31,27 @@ jobs:
         run: alembic upgrade head
       - run: python -m app.admin eval
       - run: pytest -q -p no:cacheprovider
+      - name: 备份预检及隔离数据库恢复演练
+        working-directory: .
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: tl
+          PGPASSWORD: tl
+          RESTORE_TEST_REDIS_URL: redis://127.0.0.1:6379/1
+          RESTORE_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/restore-pg"
+          for tool in pg_dump pg_restore psql; do
+            cat > "$RUNNER_TEMP/restore-pg/$tool" <<'WRAPPER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec docker exec -i -e PGPASSWORD -e PGUSER "$RESTORE_POSTGRES_CONTAINER" "$(basename "$0")" "$@"
+          WRAPPER
+            chmod +x "$RUNNER_TEMP/restore-pg/$tool"
+          done
+          export RESTORE_PG_BIN="$RUNNER_TEMP/restore-pg"
+          python -m unittest discover -s deploy/tests -v
   frontend:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: frontend } }
@@ -40,7 +61,7 @@ jobs:
         with: { node-version: "20", cache: npm, cache-dependency-path: frontend/package-lock.json }
       - run: npm ci
       - run: npm run lint
-      - run: npm test
+      - run: npm test -- --maxWorkers=1
       - run: npm run build
   docker:
     runs-on: ubuntu-latest
@@ -53,5 +74,7 @@ jobs:
         run: |
           docker build -t tuoyu-backend:ci backend
           docker build -t tuoyu-web:ci -f frontend/Dockerfile.prod frontend
+      - name: 备份监控规则回归
+        run: docker run --rm -v "$PWD/deploy/monitoring:/rules:ro" -w /rules --entrypoint promtool prom/prometheus:v2.54.1 test rules alerts.test.yml
       - name: 脚本语法
         run: for f in deploy/scripts/*.sh; do bash -n "$f"; done

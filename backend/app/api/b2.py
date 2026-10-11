@@ -215,6 +215,27 @@ def add_sku(pid: uuid.UUID, body: SkuIn, request: Request, cu: CurrentUser = Dep
     return crm2.sku_out(s, "price.floor" in cu.permissions)
 
 
+@router.put("/products/{pid}/skus/{sid}", tags=["products"])
+def update_sku(pid: uuid.UUID, sid: uuid.UUID, body: SkuIn, request: Request,
+               cu: CurrentUser = Depends(require("product.manage")), db: Session = Depends(get_db)):
+    _get(db, Product, pid)
+    sku = db.scalar(select(ProductSku).where(
+        ProductSku.id == sid, ProductSku.product_id == pid, ProductSku.deleted_at.is_(None)).with_for_update())
+    if not sku:
+        raise AppError("COMMON_NOT_FOUND")
+    changes = body.model_dump(exclude_unset=True)
+    if {"cost_price", "floor_price", "customer_prices"} & changes.keys() and "price.floor" not in cu.permissions:
+        raise AppError("COMMON_FORBIDDEN", details={"field": "cost/floor"})
+    for tier in body.tier_prices:
+        if "min_qty" not in tier or "price" not in tier:
+            raise AppError("COMMON_VALIDATION", details={"tier_prices": "需 min_qty 与 price"})
+    for field, value in changes.items():
+        setattr(sku, field, value)
+    audit(db, cu, request, "product.sku_update", "product", pid, {"sku_id": str(sid), "fields": sorted(changes)})
+    db.commit()
+    return crm2.sku_out(sku, "price.floor" in cu.permissions)
+
+
 @router.get("/skus/{sid}/price", tags=["products"])
 def sku_price(sid: uuid.UUID, qty: float = 1, account_id: uuid.UUID | None = None, cu: CurrentUser = Depends(require("product.read")),
               db: Session = Depends(get_db)):
@@ -672,7 +693,9 @@ class SampleMove(BaseModel):
 
 @router.post("/samples/{sid}:move", tags=["orders"])
 def move_sample(sid: uuid.UUID, body: SampleMove, request: Request, cu: CurrentUser = Depends(require("order.manage")), db: Session = Depends(get_db)):  # noqa: E501
-    s = _get(db, Sample, sid)
+    s = db.scalar(select(Sample).where(Sample.id == sid, Sample.deleted_at.is_(None)).with_for_update())
+    if not s:
+        raise AppError("COMMON_NOT_FOUND")
     _acc(db, s.account_id, cu, write=True)
     crm2.sample_move(s, body.to, body.model_dump())
     if body.to == "received":
@@ -859,4 +882,10 @@ def legacy_batch(body: LegacyBatchIn, request: Request, cu: CurrentUser = Depend
             res[str(i)] = e.code
     audit(db, cu, request, "approval.legacy_batch", body.type, None, {"results": res, "approve": body.approve})
     db.commit()
+    if body.type == "agent":
+        from app.agent.queue import dispatch
+        from app.core.db import current_tenant
+        for task_id, status in res.items():
+            if status == "queued":
+                dispatch(current_tenant(db), task_id)
     return res

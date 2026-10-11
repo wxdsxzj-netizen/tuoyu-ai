@@ -89,7 +89,7 @@ def livez():
 def readyz():
     """就绪检查：数据库、Redis、迁移版本。任一不可用返回 503。"""
     r = readiness()
-    ok = r["db"] and r["redis"]
+    ok = r["db"] and r["redis"] and r["migrations_current"]
     return JSONResponse({"status": "ok" if ok else "degraded", **r}, status_code=200 if ok else 503)
 
 

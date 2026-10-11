@@ -41,3 +41,26 @@ DSR 操作锁定工单行；导出构建、清理及幂等领取按租户锁排�
 迁移 `0016` 为幂等记录加入 tenant_id 和 discard_response。无法可靠归属的历史缓存正文清空并禁止迟到响应回填；不确定操作保持 status_code=0。降级删除新列但不恢复已擦除正文。切换版本需先排空旧写进程；旧进程不理解新字段，不能并行运行。
 
 结果不确定时必须对账，不删除领取记录或换键重试。源归档、不可变证据、共享数据与外部副本的保留依据、平台办理入口属于仍需业务确认的工作，不提供绕过 409 的“强制完成”开关。
+
+## 增补：失败或崩溃导出的磁盘残留
+
+独立复核发现固定ZIP写入后、`file_path`登记前发生错误可能留下部分个人数据。已用真实文件失败注入复现：联系人JSON成功写入后令下一次写入失败，旧代码仍允许DSR完成却保留ZIP；不是已确认的生产事故。
+
+导出现在以仅进程用户可读写的随机临时文件生成完整ZIP，成功关闭后原子发布。生成在数据库保存点内，SQL中止先回滚保存点再登记失败；错误只存异常类型，不保存可能含个人数据的参数。失败清理本导出的临时文件和最终文件。进程强制终止可能绕过清理，因此DSR同时扫描本租户严格UUID命名的受管文件，包括没有`file_path`、已过期记录以及数据库事务未提交留下的孤儿文件。
+
+扫描只检查配置上传目录下的直接`exports`目录，不递归、不接受符号链接、不删除其他租户文件、不放宽已有路径校验；目录、文件类型、路径或删除失败会阻止完成。外部副本和未知命名历史文件仍需受控盘点，不能凭邮箱内容搜索后随意删除。
+
+验证：修复前新增3项失败；修复后DSR/导出权限/原并发回归19通过（31.59s）。增补真实SQL除零中止后，与跨会话/聊天回归合跑19通过（26.30s），其中DSR11项。命令：
+
+```sh
+TL_SECRETS_FILE=/dev/null TL_DATABASE_URL="$AUDIT_DATABASE_URL" TL_REDIS_URL="$AUDIT_REDIS_URL" .venv/bin/python -m pytest -q -p no:cacheprovider backend/tests/test_audit_dsr_erasure.py backend/tests/test_audit_dsr_scope.py backend/tests/test_b1.py
+TL_SECRETS_FILE=/dev/null TL_DATABASE_URL="$AUDIT_DATABASE_URL" TL_REDIS_URL="$AUDIT_REDIS_URL" .venv/bin/python -m pytest -q -p no:cacheprovider backend/tests/test_audit_dsr_erasure.py backend/tests/test_audit_inquiry_links.py backend/tests/test_audit_widget_response.py
+```
+
+无数据库迁移；回退会恢复部分ZIP残留风险。此修正不解除本文件列明的保留、共享来源及外部副本业务核查要求。
+
+## 已确认的办理范围
+
+用户已确认：普通业务副本按删除流程清理；审计记录、财务证据和涉及其他租户的共享数据保留人工核查关卡。核查未完成时不得显示“删除完成”。没有给定保留依据、期限或责任人的类别继续处于人工办理状态，不自动到期销毁，不跨租户删除共享来源。此范围选择已确认，工单本身仍需按实际证据逐件办理。
+
+增补兼容：旧版记录的相对文件路径在解析后必须精确等于受管目标，且路径本身不能是符号链接；通过后按规范化受管路径清理。并未放宽任意路径删除权限。

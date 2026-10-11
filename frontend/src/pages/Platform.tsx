@@ -4,6 +4,7 @@ import { Alert, Button, Card, Form, Input, List, Select, Space, Table, Tabs, Tag
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
 import { useAuth } from '../auth'
+import OAuthConnect from '../OAuthConnect'
 
 function Sites() {
   const { t } = useTranslation()
@@ -36,12 +37,8 @@ function Deliverability() {
   useEffect(() => { api.get('/seed-tests').then(r => setSeeds(r.data)); api.get('/mailboxes').then(r => setMbs(r.data.items || r.data || [])) }, [])
   return <>
     <Space style={{ marginBottom: 12 }}>
-      <Button onClick={() => api.get('/mailboxes/oauth/google:start').then(r => message.info(r.data.note || JSON.stringify(r.data)))}>{t('b78.oauthGoogle')}</Button>
-      <Button onClick={() => api.get('/mailboxes/oauth/microsoft:start').then(r => message.info(r.data.note || JSON.stringify(r.data)))}>{t('b78.oauthMs')}</Button>
-      <Button onClick={() => {
-        const email = prompt('stub email')
-        if (email) api.post('/mailboxes/oauth/google:complete-stub', { email }).then(() => message.success('stub mailbox'))
-      }}>{t('b78.oauthStub')}</Button>
+      <OAuthConnect provider="google">{t('b78.oauthGoogle')}</OAuthConnect>
+      <OAuthConnect provider="microsoft">{t('b78.oauthMs')}</OAuthConnect>
       <Button type="primary" onClick={() => {
         const mb = mbs[0]?.id
         api.post('/seed-tests', { mailbox_id: mb, subject: 'Seed test', body: 'Hello from seed test' }).then(r => { message.success(`inbox ${Math.round((r.data.inbox_rate || 0) * 100)}%`); api.get('/seed-tests').then(x => setSeeds(x.data)) })

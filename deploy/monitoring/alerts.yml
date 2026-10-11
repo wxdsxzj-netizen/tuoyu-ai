@@ -47,7 +47,10 @@ groups:
         labels: { severity: warning }
         annotations: { summary: "内存使用超过 90%" }
       - alert: BackupMissing
-        expr: time() - node_textfile_backup_last_success_timestamp > 26 * 3600
+        expr: >-
+          (time() - node_textfile_backup_last_success_timestamp{job="node"} > 26 * 3600)
+          or (up{job="node"} unless on(job, instance) node_textfile_backup_last_success_timestamp{job="node"})
+          or absent(up{job="node"})
         for: 30m
         labels: { severity: warning }
-        annotations: { summary: "超过 26 小时没有成功的数据库备份（需启用 node-exporter textfile 收集器，见 DEPLOY.md）" }
+        annotations: { summary: "备份成功状态缺失或超过26小时未更新，请检查备份任务及textfile收集器" }

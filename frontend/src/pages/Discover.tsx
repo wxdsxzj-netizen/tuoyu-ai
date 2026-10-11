@@ -1,9 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tabs, Tag, message } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
 import { useAuth } from '../auth'
+import RemoteSelect from '../RemoteSelect'
 
 function useOpts(url: string, label = 'name') {
   const [o, setO] = useState<any[]>([])
@@ -72,6 +73,10 @@ function Semantic() {
 
 function Lists() {
   const { t } = useTranslation()
+  const { can } = useAuth()
+  const [members, setMembers] = useState<string[]>([])
+  const [adding, setAdding] = useState(false)
+  const busy = useRef(false)
   const [rows, setRows] = useState<any[]>([])
   const [view, setView] = useState<any>()
   const [form] = Form.useForm()
@@ -99,11 +104,23 @@ function Lists() {
     <Table rowKey="id" size="small" dataSource={rows} columns={[
       { title: t('b3.name'), dataIndex: 'name' }, { title: t('b3.kind'), dataIndex: 'kind', render: v => <Tag>{t('b3.k_' + v)}</Tag> },
       { title: t('b3.objType'), dataIndex: 'object_type', render: v => t('b3.o_' + v) }, { title: t('b3.count'), dataIndex: 'count' },
-      { title: '', render: (_: any, r: any) => <Space><Button size="small" onClick={async () => setView((await api.get(`/lists/${r.id}`)).data)}>{t('b3.view')}</Button>
+      { title: '', render: (_: any, r: any) => <Space><Button size="small" onClick={async () => { setMembers([]); setView((await api.get(`/lists/${r.id}`)).data) }}>{t('b3.view')}</Button>
         {r.object_type === 'contact' && <Button size="small" onClick={() => enroll(r.id)}>{t('b3.enrollList')}</Button>}
         <Button size="small" danger onClick={async () => { await api.delete(`/lists/${r.id}`); load() }}>{t('b3.delete')}</Button></Space> },
     ]} />
     <Modal open={!!view} onCancel={() => setView(undefined)} footer={null} width={760} title={view?.name}>
+      {can('list.manage') && view?.kind === 'static' && <Space style={{ marginBottom: 12 }}>
+        <RemoteSelect key={view.id} aria-label="选择名单成员" style={{ width: 420 }} mode="multiple"
+          url={view.object_type === 'company' ? '/companies' : '/contacts'} value={members} onChange={setMembers}
+          label={(row: any) => view.object_type === 'company' ? row.name : `${row.full_name || row.email} · ${row.email || ''}`} />
+        <Button loading={adding} disabled={!members.length} onClick={async () => {
+          if (busy.current) return
+          busy.current = true; setAdding(true)
+          try { await api.post(`/lists/${view.id}/members`, { add: members }); setMembers([]); setView((await api.get(`/lists/${view.id}`)).data); load() }
+          catch { /* retain selection on failure */ }
+          finally { busy.current = false; setAdding(false) }
+        }}>添加成员</Button>
+      </Space>}
       <Table rowKey="id" size="small" dataSource={view?.members} columns={[{ title: t('b3.name'), dataIndex: 'name' }, { title: 'Email', dataIndex: 'email' }, { title: t('b3.title'), dataIndex: 'title' },
         { title: '', render: (_: any, m: any) => view?.kind === 'static' && <Button size="small" onClick={async () => { await api.post(`/lists/${view.id}/members`, { remove: [m.id] }); setView((await api.get(`/lists/${view.id}`)).data); load() }}>{t('b3.remove')}</Button> }]} />
     </Modal>

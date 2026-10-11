@@ -5,6 +5,8 @@ import dayjs, { Dayjs } from 'dayjs'
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
+import RemoteSelect from '../RemoteSelect'
+import { useAuth } from '../auth'
 
 const pct = (v: number | null | undefined) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(1)}%`)
 const COLORS = ['#cf1322', '#fa8c16', '#1677ff', '#8c8c8c']
@@ -25,20 +27,19 @@ function FunnelChart({ steps }: { steps: any[] }) {
 }
 
 function Funnel() {
+  const { can } = useAuth()
   const { t } = useTranslation()
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(30, 'day'), dayjs()])
   const [owner, setOwner] = useState<string | undefined>()
-  const [users, setUsers] = useState<any[]>([])
   const [d, setD] = useState<any>()
   const load = useCallback(async () => setD((await api.get('/analytics/funnel', { params: { since: range[0].toISOString(), until: range[1].toISOString(), owner_id: owner } })).data), [range, owner])
   useEffect(() => { load() }, [load])
-  useEffect(() => { api.get('/users').then(r => setUsers(r.data.items ?? r.data)).catch(() => null) }, [])
   if (!d) return null
   const grades = Object.entries(d.inquiry.grades).map(([k, v]) => ({ name: `${k} 级`, value: v as number }))
   return <>
     <Space style={{ marginBottom: 12 }}>
       <DatePicker.RangePicker value={range} onChange={v => v && setRange(v as [Dayjs, Dayjs])} />
-      {users.length > 0 && <Select allowClear placeholder="业务员" style={{ width: 160 }} value={owner} onChange={setOwner} options={users.map(u => ({ value: u.id, label: u.name }))} />}
+      {can('user.read') && <RemoteSelect allowClear placeholder="业务员" style={{ width: 160 }} value={owner} onChange={setOwner} url="/users" />}
       <Typography.Text type="secondary">{t('p5.asOf')} {new Date(d.as_of).toLocaleString()}</Typography.Text>
     </Space>
     <Row gutter={16}>

@@ -503,6 +503,9 @@ def test_reply_categories_ooo_unsub_and_imap(client):
                       b"Diagnostic-Code: smtp; 550 user unknown\r\n")
 
         class FakeImap:
+            def response(self, name):
+                return name, [b"1"]
+
             def select(self, *_):
                 return "OK", [b"1"]
 

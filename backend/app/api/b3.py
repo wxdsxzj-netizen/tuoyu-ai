@@ -21,6 +21,7 @@ from app.core.errors import AppError
 from app.models import (
     BlacklistCheck,
     Company,
+    Contact,
     ExclusionRule,
     Icp,
     Inquiry,
@@ -139,8 +140,19 @@ def get_lists(cu: CurrentUser = Depends(require("list.manage")), db: Session = D
     return [_l_out(db, p) for p in db.scalars(st)]
 
 
+def _validate_members(db, object_type, ids):
+    wanted = set(ids)
+    if not wanted:
+        return
+    model = Contact if object_type == "contact" else Company
+    found = set(db.scalars(select(model.id).where(model.id.in_(wanted), model.deleted_at.is_(None))))
+    if found != wanted:
+        raise AppError("COMMON_NOT_FOUND")
+
+
 @router.post("/lists", tags=["lists"])
 def create_list(body: ListIn, request: Request, cu: CurrentUser = Depends(require("list.manage")), db: Session = Depends(get_db)):
+    _validate_members(db, body.object_type, body.member_ids)
     pl = ProspectList(name=body.name, kind=body.kind, object_type=body.object_type, filters=body.filters,
                       member_ids=[str(i) for i in dict.fromkeys(body.member_ids)], owner_id=cu.id, created_by=cu.id)
     db.add(pl)
@@ -163,7 +175,11 @@ class MembersIn(BaseModel):
 
 @router.post("/lists/{lid}/members", tags=["lists"])
 def edit_members(lid: uuid.UUID, body: MembersIn, request: Request, cu: CurrentUser = Depends(require("list.manage")), db: Session = Depends(get_db)):  # noqa: E501
-    pl = _mine(cu, _get(db, ProspectList, lid))
+    pl = db.scalar(select(ProspectList).where(ProspectList.id == lid, ProspectList.deleted_at.is_(None)).with_for_update())
+    if not pl:
+        raise AppError("COMMON_NOT_FOUND")
+    _mine(cu, pl)
+    _validate_members(db, pl.object_type, body.add)
     if pl.kind != "static":
         raise AppError("COMMON_INVALID_STATE", details={"list": "动态名单由条件决定成员"})
     cur = dict.fromkeys(pl.member_ids or [])

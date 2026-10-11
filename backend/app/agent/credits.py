@@ -17,7 +17,7 @@ def lock_wallet(db):
     tid = current_tenant(db)
     if tid is None:
         raise AppError("COMMON_FORBIDDEN")
-    db.scalar(select(Tenant.id).where(Tenant.id == tid).with_for_update())
+    db.scalar(select(Tenant.id).where(Tenant.id == tid).with_for_update(key_share=True))
 
 
 def _amount(value):

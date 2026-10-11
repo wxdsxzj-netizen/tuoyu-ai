@@ -1,8 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, Card, Descriptions, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Typography } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api/client'
+import { useServerPage, PageError } from '../useServerPage'
+import RemoteSelect from '../RemoteSelect'
 import { useAuth } from '../auth'
 
 const GC: Record<string, string> = { A: 'red', B: 'orange', C: 'blue', D: 'default' }
@@ -20,12 +22,9 @@ function InquiryList() {
   const { me } = useAuth()
   const can = (p: string) => me?.permissions?.includes(p)
   const [status, setStatus] = useState<string | undefined>()
-  const [rows, setRows] = useState<any[]>([])
+  const page = useServerPage('/inquiries', { status }, 'page_size')
+  const { rows, reload: load } = page
   const [view, setView] = useState<any>()
-  const [users, setUsers] = useState<any[]>([])
-  const load = useCallback(async () => setRows((await api.get('/inquiries', { params: { status, page_size: 100 } })).data.items), [status])
-  useEffect(() => { load() }, [load])
-  useEffect(() => { if (can('inquiry.manage')) api.get('/users').then(r => setUsers(r.data.items ?? r.data)) }, [])  // eslint-disable-line
   const open = async (id: string) => setView((await api.get(`/inquiries/${id}`)).data)
   const act = async (path: string, body?: any) => { const r = await api.post(`/inquiries/${view.id}:${path}`, body); setView({ ...view, ...r.data }); load() }
   const Items = ({ list }: { list: any[] }) => <>{(list || []).map((x, i) => <div key={i}>{x.item} <b style={{ color: x.points < 0 ? '#cf1322' : undefined }}>{x.points > 0 ? '+' : ''}{x.points}</b></div>)}</>
@@ -35,7 +34,8 @@ function InquiryList() {
         options={STATUSES.map(s => ({ value: s, label: t(`p5.st_${s}`) }))} />
       <Button onClick={load}>刷新</Button>
     </Space>
-    <Table rowKey="id" dataSource={rows} size="middle" onRow={r => ({ onClick: () => open(r.id), style: { cursor: 'pointer' } })} columns={[
+    <PageError page={page} />
+    <Table loading={page.loading} pagination={page.pagination} rowKey="id" dataSource={rows} size="middle" onRow={r => ({ onClick: () => open(r.id), style: { cursor: 'pointer' } })} columns={[
       { title: t('p5.grade'), dataIndex: 'grade', render: g => g ? <Tag color={GC[g]}>{g}</Tag> : '—' },
       { title: t('p5.score'), dataIndex: 'score', render: s => s ?? '—' },
       { title: t('p5.peer'), dataIndex: 'peer_email' },
@@ -73,10 +73,10 @@ function InquiryList() {
             ? <Button type="primary" onClick={() => act('grab', {})}>{t('b1.grab')}</Button>
             : <Button type="primary" onClick={() => act('assign', { assignee_id: me?.user.id })}>{t('p5.claim')}</Button>)}
           {can('inquiry.manage') && ['assigned', 'pending_assign'].includes(view.status) &&
-            <Select placeholder={t('p5.reassign')} style={{ width: 180 }} onChange={v => act('assign', { assignee_id: v })}
-              options={users.map(u => ({ value: u.id, label: u.name }))} />}
+            <RemoteSelect url="/users" placeholder={t('p5.reassign')} style={{ width: 180 }} onChange={v => act('assign', { assignee_id: v })} />}
           {can('inquiry.manage') && <Button onClick={() => act('rescore')}>{t('p5.rescore')}</Button>}
-          <Button href={`/inbox?c=${view.conversation_id}`}>打开会话</Button>
+          {(view.conversations?.length ? view.conversations : [{ id: view.conversation_id }]).map((c: any) =>
+            <Button key={c.id} href={`/inbox?c=${c.id}`}>打开会话{c.peer_email ? `：${c.peer_email} · ${c.subject || "无主题"}` : ""}</Button>)}
         </Space>
       </>}
     </Drawer>
@@ -128,7 +128,7 @@ function Rules() {
         <Form.Item name="languages" label={t('p5.languages')}><Select mode="tags" /></Form.Item>
         <Form.Item name="grades" label={t('p5.grades')}><Select mode="multiple" options={['A', 'B', 'C', 'D'].map(g => ({ value: g, label: g }))} /></Form.Item>
         <Form.Item name="keywords" label={t('p5.keywords')}><Select mode="tags" /></Form.Item>
-        <Form.Item name="member_ids" label={t('p5.members')} rules={[{ required: true }]}><Select mode="multiple" options={users.map(u => ({ value: u.id, label: u.name }))} /></Form.Item>
+        <Form.Item name="member_ids" label={t('p5.members')} rules={[{ required: true }]}><RemoteSelect mode="multiple" url="/users" /></Form.Item>
         <Form.Item name="daily_cap" label={t('p5.dailyCap')}><InputNumber min={1} /></Form.Item>
       </Form>
     </Modal>

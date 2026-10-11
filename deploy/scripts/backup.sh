@@ -28,7 +28,7 @@ MANIFEST="SHA256SUMS-$TS"
 # 校验：能列出目录说明 dump 完整
 "${DC[@]}" exec -T postgres pg_restore -l < "$STAGE/$DB_FILE" > /dev/null
 
-"${DC[@]}" run --rm --no-deps -T --entrypoint sh backend -c "tar -C /data -czf - uploads" > "$STAGE/$UP_FILE"
+"${DC[@]}" run --rm --no-deps -T --entrypoint sh backend -c "tar -C /data --exclude=uploads/.restore-staging --exclude=uploads/.restore-recovery -czf - uploads" > "$STAGE/$UP_FILE"
 [ -s "$STAGE/$UP_FILE" ] || { echo "附件备份为空" >&2; exit 1; }
 tar -tzf "$STAGE/$UP_FILE" > /dev/null
 

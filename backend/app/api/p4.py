@@ -152,7 +152,7 @@ class NotifOut(ORM):
 
 
 @router.get("/notifications", tags=["notifications"])
-def list_notifications(unread: bool = False, page: int = Query(1, ge=1), size: int = Query(20, le=100),
+def list_notifications(unread: bool = False, page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100),
                        cu: CurrentUser = Depends(require("tenant.read")), db: Session = Depends(get_db)):
     st = select(Notification).where(Notification.recipient_id == cu.id)
     if unread:
@@ -234,7 +234,7 @@ def _conv(db, cid, cu) -> Conversation:
 
 @router.get("/conversations", tags=["inbox"])
 def list_conversations(status: str | None = None, category: str | None = None, mine: bool = False, q: str | None = None,
-                       page: int = Query(1, ge=1), size: int = Query(20, le=100),
+                       page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100),
                        cu: CurrentUser = Depends(require("inbox.read")), db: Session = Depends(get_db)):
     st = _conv_scope(select(Conversation).where(Conversation.deleted_at.is_(None)), cu)
     if status:
@@ -245,7 +245,8 @@ def list_conversations(status: str | None = None, category: str | None = None, m
         st = st.where(Conversation.assignee_id == cu.id)
     if q:
         st = st.where(or_(Conversation.peer_email.ilike(f"%{q}%"), Conversation.subject.ilike(f"%{q}%")))
-    return page_of(db, st.order_by(Conversation.last_message_at.desc().nullslast()), page, size, ConvOut.model_validate)
+    return page_of(db, st.order_by(Conversation.last_message_at.desc().nullslast(), Conversation.id.desc()),
+                   page, size, ConvOut.model_validate)
 
 
 @router.get("/conversations/{cid}", tags=["inbox"])
@@ -256,7 +257,7 @@ def get_conversation(cid: uuid.UUID, cu: CurrentUser = Depends(require("inbox.re
         c.status = "pending"
         db.commit()
     acc = db.get(Account, c.account_id) if c.account_id else None
-    ho = db.scalar(select(Handoff).where(Handoff.conversation_id == c.id).order_by(Handoff.created_at.desc()).limit(1))
+    ho = db.scalar(select(Handoff).where(Handoff.conversation_id == c.id).order_by(Handoff.created_at.desc(), Handoff.id.desc()).limit(1))
     return {"conversation": ConvOut.model_validate(c), "messages": [MsgOut.model_validate(m) for m in msgs],
             "account": {"id": str(acc.id), "name": acc.name} if acc else None,
             "handoff": {"id": str(ho.id), "status": ho.status} if ho else None}
@@ -411,12 +412,12 @@ def _ho_scope(st, cu):
 
 
 @router.get("/handoffs", tags=["handoffs"])
-def list_handoffs(status: str | None = None, page: int = Query(1, ge=1), size: int = Query(20, le=100),
+def list_handoffs(status: str | None = None, page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100),
                   cu: CurrentUser = Depends(require("handoff.accept")), db: Session = Depends(get_db)):
     st = _ho_scope(select(Handoff).where(Handoff.deleted_at.is_(None)), cu)
     if status:
         st = st.where(Handoff.status == status)
-    return page_of(db, st.order_by(Handoff.created_at.desc()), page, size, HandoffOut.model_validate)
+    return page_of(db, st.order_by(Handoff.created_at.desc(), Handoff.id.desc()), page, size, HandoffOut.model_validate)
 
 
 @router.get("/handoffs/stats", tags=["handoffs"])
@@ -430,8 +431,11 @@ def get_handoff(hid: uuid.UUID, cu: CurrentUser = Depends(require("handoff.accep
     h = _get(db, Handoff, hid)
     if not _all(cu) and h.assignee_id not in (None, cu.id) and h.decided_by != cu.id:
         raise AppError("COMMON_NOT_FOUND")
-    msgs = db.scalars(select(Message).where(Message.conversation_id == h.conversation_id, Message.direction != "note")
-                      .order_by(Message.created_at)).all()
+    from app.crm import inquiry as inquiry_mod
+    from app.models import Inquiry
+    inquiry = db.scalar(select(Inquiry).where(Inquiry.handoff_id == h.id))
+    msgs = inquiry_mod.messages(db, inquiry) if inquiry else db.scalars(select(Message).where(
+        Message.conversation_id == h.conversation_id, Message.direction != "note").order_by(Message.created_at)).all()
     return {"handoff": HandoffOut.model_validate(h), "messages": [MsgOut.model_validate(m) for m in msgs]}
 
 
@@ -505,7 +509,7 @@ def _acc(db, aid, cu, write=False) -> Account:
 
 @router.get("/accounts", tags=["crm"])
 def list_accounts(pool: str | None = Query(None, pattern="^(private|public)$"), q: str | None = None, grade: str | None = None,
-                  page: int = Query(1, ge=1), size: int = Query(20, le=100),
+                  page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100),
                   cu: CurrentUser = Depends(require("crm.read")), db: Session = Depends(get_db)):
     st = select(Account).where(Account.deleted_at.is_(None))
     if not _all(cu):
@@ -516,7 +520,7 @@ def list_accounts(pool: str | None = Query(None, pattern="^(private|public)$"), 
         st = st.where(Account.grade == grade)
     if q:
         st = st.where(or_(Account.name.ilike(f"%{q}%"), Account.domain.ilike(f"%{q}%")))
-    return page_of(db, st.order_by(Account.created_at.desc()), page, size, AccountOut.model_validate)
+    return page_of(db, st.order_by(Account.created_at.desc(), Account.id.desc()), page, size, AccountOut.model_validate)
 
 
 @router.post("/accounts", status_code=201, tags=["crm"])
@@ -540,8 +544,9 @@ def get_account(aid: uuid.UUID, cu: CurrentUser = Depends(require("crm.read")), 
     a = _acc(db, aid, cu)
     contacts = db.scalars(select(Contact).where(Contact.account_id == a.id, Contact.deleted_at.is_(None))).all()
     opps = db.scalars(select(Opportunity).where(Opportunity.account_id == a.id, Opportunity.deleted_at.is_(None))
-                      .order_by(Opportunity.created_at.desc())).all()
-    quotes = db.scalars(select(Quote).where(Quote.account_id == a.id, Quote.deleted_at.is_(None)).order_by(Quote.created_at.desc())).all()
+                      .order_by(Opportunity.created_at.desc(), Opportunity.id.desc())).all()
+    quotes = db.scalars(select(Quote).where(Quote.account_id == a.id, Quote.deleted_at.is_(None))
+                        .order_by(Quote.created_at.desc(), Quote.id.desc())).all()
     convs = db.scalars(select(Conversation).where(Conversation.account_id == a.id).order_by(Conversation.last_message_at.desc())).all()
     msgs = db.scalars(select(Message).where(Message.conversation_id.in_([c.id for c in convs] or [uuid.uuid4()]), Message.direction != "note")  # noqa: E501
                       .order_by(Message.created_at.desc()).limit(50)).all()
@@ -622,16 +627,19 @@ def _opp(db, oid, cu) -> Opportunity:
 
 
 @router.get("/opportunities", tags=["crm"])
-def list_opps(stage: str | None = None, account_id: uuid.UUID | None = None, page: int = Query(1, ge=1), size: int = Query(50, le=200),
+def list_opps(stage: str | None = None, account_id: uuid.UUID | None = None, q: str | None = None,
+              page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200),
               cu: CurrentUser = Depends(require("crm.read")), db: Session = Depends(get_db)):
     st = select(Opportunity).where(Opportunity.deleted_at.is_(None))
     if not _all(cu):
         st = st.where(Opportunity.owner_id == cu.id)
+    if q:
+        st = st.where(Opportunity.name.ilike(f"%{q}%"))
     if stage:
         st = st.where(Opportunity.stage == stage)
     if account_id:
         st = st.where(Opportunity.account_id == account_id)
-    return page_of(db, st.order_by(Opportunity.created_at.desc()), page, size, OppOut.from_orm_)
+    return page_of(db, st.order_by(Opportunity.created_at.desc(), Opportunity.id.desc()), page, size, OppOut.from_orm_)
 
 
 @router.post("/opportunities", status_code=201, tags=["crm"])
@@ -746,17 +754,20 @@ def _apply(q: Quote, body: QuoteIn, db, cu):
 
 
 @router.get("/quotes", tags=["crm"])
-def list_quotes(account_id: uuid.UUID | None = None, status: str | None = None, page: int = Query(1, ge=1), size: int = Query(20, le=100),
+def list_quotes(account_id: uuid.UUID | None = None, status: str | None = None, q: str | None = None,
+                page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100),
                 cu: CurrentUser = Depends(require("crm.read")), db: Session = Depends(get_db)):
     st = select(Quote).where(Quote.deleted_at.is_(None))
     if not _all(cu):
         st = st.where(Quote.account_id.in_(select(Account.id).where(Account.owner_id == cu.id)))
     if account_id:
         st = st.where(Quote.account_id == account_id)
+    if q:
+        st = st.where(Quote.quote_no.ilike(f"%{q}%"))
     if status:
         st = st.where(Quote.status == status)
     hide = "quote.approve" not in cu.permissions
-    return page_of(db, st.order_by(Quote.created_at.desc()), page, size, lambda q: quote_out(q, hide))
+    return page_of(db, st.order_by(Quote.created_at.desc(), Quote.id.desc()), page, size, lambda q: quote_out(q, hide))
 
 
 @router.post("/quotes", status_code=201, tags=["crm"])
@@ -879,12 +890,18 @@ def create_pi(qid: uuid.UUID, request: Request, cu: CurrentUser = Depends(requir
 
 
 @router.get("/pis", tags=["crm"])
-def list_pis(cu: CurrentUser = Depends(require("crm.read")), db: Session = Depends(get_db)):
-    st = select(ProformaInvoice).order_by(ProformaInvoice.created_at.desc())
+def list_pis(page: int | None = Query(None, ge=1), size: int = Query(20, ge=1, le=100),
+             cu: CurrentUser = Depends(require("crm.read")), db: Session = Depends(get_db)):
+    st = select(ProformaInvoice).where(ProformaInvoice.deleted_at.is_(None)).order_by(
+        ProformaInvoice.created_at.desc(), ProformaInvoice.id.desc())
     if not _all(cu):
         st = st.where(ProformaInvoice.account_id.in_(select(Account.id).where(Account.owner_id == cu.id)))
-    return [{"id": str(p.id), "pi_no": p.pi_no, "quote_id": str(p.quote_id), "account_id": str(p.account_id), "total": p.total_minor / 100,
-             "currency": p.currency, "status": p.status, "created_at": p.created_at.isoformat()} for p in db.scalars(st.limit(200))]
+    def out(p):
+        return {"id": str(p.id), "pi_no": p.pi_no, "quote_id": str(p.quote_id), "account_id": str(p.account_id),
+                "total": p.total_minor / 100, "currency": p.currency, "status": p.status, "created_at": p.created_at.isoformat()}
+    if page is None:  # retain existing API callers; interactive lists explicitly request a page
+        return [out(p) for p in db.scalars(st.limit(200))]
+    return page_of(db, st, page, size, out)
 
 
 @router.get("/pis/{pid}/pdf", tags=["crm"])

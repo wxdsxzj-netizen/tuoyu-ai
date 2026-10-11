@@ -9,7 +9,6 @@ from pathlib import Path
 from sqlalchemy import JSON, String, case, cast, func, or_, select, update
 from sqlalchemy.dialects.postgresql import ARRAY
 
-from app.core.config import get_settings
 from app.core.db import Base, TenantOwned, current_tenant, utcnow
 from app.core.errors import AppError
 from app.models import (
@@ -52,23 +51,18 @@ def lock_tenant(db):
 
 
 def invalidate_exports(db):
-    root = (Path(get_settings().upload_dir) / "exports").resolve()
-    rows = list(db.scalars(select(DataExport).where(DataExport.status.in_(
-        ("pending_approval", "pending", "running", "ready", "failed", "expired")))))
-    paths = []
+    from app.org.export_files import checked, managed_root, owned_paths, remove_paths
+    root = managed_root()
+    rows = list(db.scalars(select(DataExport)))
     for ex in rows:
-        if not ex.file_path:
-            continue
-        path = Path(ex.file_path)
-        expected = root / f"{ex.tenant_id}-{ex.id}.zip"
-        if path.resolve() != expected or path.is_symlink():
-            raise AppError("COMMON_INVALID_STATE", message="导出文件路径异常，删除请求需要人工核查")
-        paths.append(path)
-    try:
-        for path in paths:
-            path.unlink(missing_ok=True)
-    except OSError as exc:
-        raise AppError("COMMON_INVALID_STATE", message="旧导出文件未清理成功，不能完成删除请求") from exc
+        if ex.file_path:
+            path = Path(ex.file_path)
+            expected = root / f"{ex.tenant_id}-{ex.id}.zip"
+            if path.is_symlink() or path.resolve() != expected:
+                raise AppError("COMMON_INVALID_STATE", message="导出文件路径异常，删除请求需要人工核查")
+            checked(expected, root)
+    # Includes failed/expired rows with no recorded file_path and orphan crash remnants.
+    remove_paths(owned_paths(current_tenant(db)))
     for ex in rows:
         ex.status, ex.file_path, ex.expires_at = "expired", None, utcnow()
         ex.error = "DSR erasure invalidated this snapshot; request a fresh export"

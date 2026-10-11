@@ -19,6 +19,7 @@ import ImportsPage from './pages/Imports'
 import CompliancePage from './pages/Compliance'
 import DsrPage from './pages/Dsr'
 import MailboxesPage from './pages/Mailboxes'
+import MailboxOAuthCallback from './pages/MailboxOAuthCallback'
 import SequencesPage from './pages/Sequences'
 import ApprovalsPage from './pages/Approvals'
 import DeliveryPage from './pages/Delivery'
@@ -152,6 +153,7 @@ function Shell() {
             <Route path="/compliance" element={<CompliancePage />} />
             <Route path="/dsr" element={<DsrPage />} />
             <Route path="/mailboxes" element={<MailboxesPage />} />
+            <Route path="/mailboxes/oauth/:provider/callback" element={<MailboxOAuthCallback />} />
             <Route path="/sequences" element={<SequencesPage />} />
             <Route path="/approvals" element={<ApprovalsPage />} />
             <Route path="/delivery" element={<DeliveryPage />} />

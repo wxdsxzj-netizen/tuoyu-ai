@@ -284,12 +284,19 @@ def mailbox_poll_task():
 
     def fn(db, tid):
         n = 0
-        for mb in db.scalars(select(Mailbox).where(Mailbox.deleted_at.is_(None), Mailbox.imap_host.is_not(None),
-                                                   Mailbox.status.not_in(("unbound", "disabled")))):
+        ids = list(db.scalars(select(Mailbox.id).where(Mailbox.deleted_at.is_(None), Mailbox.imap_host.is_not(None),
+                                                     Mailbox.status.not_in(("unbound", "disabled")))))
+        for mid in ids:
             try:
-                n += poll_mailbox(db, mb)
-            except Exception:  # noqa: BLE001  单个邮箱失败不影响其他
-                continue
+                processed = poll_mailbox(db, db.get(Mailbox, mid))
+                db.commit()
+                n += processed
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                mailbox = db.get(Mailbox, mid)
+                if mailbox:
+                    mailbox.imap_poll_error = f"IMAP poll failed ({type(exc).__name__}); will retry"
+                    db.commit()
         return n
     return _each_tenant(fn, "poll")
 
@@ -512,3 +519,33 @@ def b7_daily_task():
     finally:
         db.close()
     return out
+
+
+@celery_app.task(name="reports.tick")
+def reports_tick_task():
+    from app.b6.reports_tick import tick_all
+    return tick_all()
+
+
+@celery_app.task(name="agent.run")
+def agent_run_task(tenant_id: str, task_id: str):
+    from app.agent.queue import run_task
+    run_task(tenant_id, task_id)
+
+
+@celery_app.task(name="agent.recover")
+def recover_agents_task():
+    from sqlalchemy import or_, select
+
+    from app.agent.queue import dispatch
+    from app.core.db import bypass_tenant, utcnow
+    from app.models import AgentControl, AgentTask, Tenant
+    with SessionLocal() as db, bypass_tenant():
+        queued = list(db.execute(select(AgentTask.id, AgentTask.tenant_id).join(Tenant).where(
+            Tenant.status == "active", AgentTask.deleted_at.is_(None), or_(AgentTask.id.in_(select(AgentControl.task_id)),
+            AgentTask.status == "queued",
+            (AgentTask.status == "running") & or_(AgentTask.lease_until <= utcnow(), AgentTask.lease_until.is_(None))))
+            .order_by((AgentTask.status == "running").desc(), AgentTask.created_at, AgentTask.id).limit(100)))
+    for task_id, tenant_id in queued:
+        dispatch(tenant_id, task_id)
+    return {"dispatched": len(queued)}
