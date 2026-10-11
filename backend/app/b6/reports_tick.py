@@ -33,7 +33,6 @@ def tick_all() -> dict:
                 for r in db.scalars(select(SavedReport).where(SavedReport.deleted_at.is_(None), SavedReport.subscribe.is_not(None))):
                     if not due(r, now):
                         continue
-                    owner = None if True else r.created_by
                     try:
                         res = b5data.run(db, {**r.spec, "since": (now - timedelta(days=r.spec.get("days", 30))).isoformat(),
                                               "until": now.isoformat()}, r.created_by)
@@ -47,7 +46,6 @@ def tick_all() -> dict:
                 if n:
                     db.commit()
                 out[str(tid)] = n
-                _ = owner
     finally:
         db.close()
     return out
